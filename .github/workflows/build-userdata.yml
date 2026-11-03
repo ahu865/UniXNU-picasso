@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   userdata:
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 150
     defaults:
       run:

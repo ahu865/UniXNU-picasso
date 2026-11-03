@@ -147,6 +147,12 @@ jobs:
             --output out/picasso/ram-data --config out/picasso/.config \
             2>&1 | tee out/picasso/logs/actions-ram-data.log
 
+      - name: Build the userdata root image
+        run: |
+          python3 ./unixnu build userdata --ipsw "$UNIXNU_IPSW" 2>&1 | tee out/picasso/logs/actions-userdata.log
+          ls -lh out/picasso/userdata/
+          cat out/picasso/userdata/userdata-root.json
+
       - name: Build kernel + payload
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -273,6 +279,17 @@ jobs:
             device/out/picasso/tree/build/sheng-platform-power/*.json
             device/out/picasso/tree/build/sheng-platform-power/*.log
             device/out/picasso/tree/build/sheng-platform-power/*.o
+
+      - name: Upload userdata root image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: picasso-userdata-${{ github.run_number }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            device/out/picasso/userdata/userdata-root.img
+            device/out/picasso/userdata/userdata-root.json
             device/out/picasso/tree/build/sheng-platform-power/*.a
             device/out/picasso/tree/build/native-aes/*.json
             device/out/picasso/tree/build/native-aes/*.log

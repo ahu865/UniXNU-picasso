@@ -1,0 +1,93 @@
+name: Build userdata root image only
+
+# Fast path for device bring-up: downloads the pinned iPhone X IPSW and builds
+# out/picasso/userdata/userdata-root.img without compiling the kernel. The image
+# is split into <2 GiB parts so it stays well under the 10 GiB per-artifact cap.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: picasso-userdata-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  userdata:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+        working-directory: device
+    steps:
+      - name: Check out the picasso device repo
+        uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check iPhone X inputs
+        run: |
+          python3 scripts/check-picasso-target.py --require-build-inputs \
+            --output out/picasso/logs/target-readiness.json --github-env "$GITHUB_ENV"
+
+      - name: Prepare the isolated upstream source
+        run: |
+          TREE=$(python3 ./unixnu --prepare)
+          echo "UNIXNU_TREE=$TREE" >> "$GITHUB_ENV"
+
+      - name: Download the target IPSW
+        run: |
+          mkdir -p out/ipsw
+          IPSW="out/ipsw/$PICASSO_IPSW_FILE"
+          HOST=updates.cdn-apple.com
+          URL="$PICASSO_IPSW_URL"
+          if [ ! -s "$IPSW" ]; then
+            if ! curl --fail --retry 3 --retry-all-errors --connect-timeout 30 -o "$IPSW" "$URL"; then
+              IP=$(curl -s -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=$HOST&type=A" \
+                    | python3 -c "import sys,json; d=json.load(sys.stdin); print(next(a['data'] for a in d.get('Answer',[]) if a['type']==1))")
+              echo "runner DNS failed; pinning $HOST to $IP"
+              curl --fail --retry 5 --retry-all-errors --connect-timeout 30 \
+                --resolve "$HOST:443:$IP" -o "$IPSW" "$URL"
+            fi
+          fi
+          python3 scripts/check-picasso-target.py --ipsw "$IPSW"
+          ls -lh "$IPSW"
+          echo "UNIXNU_IPSW=$PWD/$IPSW" >> "$GITHUB_ENV"
+
+      - name: Build the userdata root image
+        run: |
+          python3 ./unixnu defconfig picasso_defconfig
+          python3 ./unixnu build userdata --ipsw "$UNIXNU_IPSW" --dry-run 2>&1 | tee out/picasso/logs/actions-userdata-dryrun.log
+          python3 ./unixnu build userdata --ipsw "$UNIXNU_IPSW" 2>&1 | tee out/picasso/logs/actions-userdata.log
+          ls -lh out/picasso/userdata/
+          cat out/picasso/userdata/userdata-root.json
+
+      - name: Split the image and hash the whole
+        run: |
+          IMG=out/picasso/userdata/userdata-root.img
+          ( cd out/picasso/userdata && shasum -a 256 userdata-root.img > userdata-root.img.sha256 )
+          split -b 1900m -d -a 2 "$IMG" out/picasso/userdata/userdata-root.img.part-
+          ls -lh out/picasso/userdata/
+          cat out/picasso/userdata/userdata-root.img.sha256
+
+      - name: Upload userdata parts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: picasso-userdata-parts-${{ github.run_number }}
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+          path: |
+            device/out/picasso/userdata/userdata-root.img.part-*
+            device/out/picasso/userdata/userdata-root.img.sha256
+            device/out/picasso/userdata/userdata-root.json
+            device/out/picasso/logs/actions-userdata*.log

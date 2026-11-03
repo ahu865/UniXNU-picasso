@@ -55,11 +55,6 @@ jobs:
           python3 scripts/check-picasso-target.py --require-build-inputs \
             --output out/picasso/logs/target-readiness.json --github-env "$GITHUB_ENV"
 
-      - name: Prepare the isolated upstream source
-        run: |
-          TREE=$(python3 ./unixnu --prepare)
-          echo "UNIXNU_TREE=$TREE" >> "$GITHUB_ENV"
-
       - name: Download the target IPSW
         run: |
           mkdir -p out/ipsw
@@ -71,9 +66,11 @@ jobs:
 
       - name: Build the userdata root image
         run: |
-          python3 ./unixnu defconfig picasso_defconfig
-          python3 ./unixnu build userdata --ipsw "$UNIXNU_IPSW" --dry-run 2>&1 | tee out/picasso/logs/actions-userdata-dryrun.log
-          python3 ./unixnu build userdata --ipsw "$UNIXNU_IPSW" 2>&1 | tee out/picasso/logs/actions-userdata.log
+          # The pinned upstream revision only implements the macOS hdiutil path;
+          # scripts/compose-userdata.py carries the host-independent UDIF reader
+          # and the SHNGROOT manifest writer.
+          python3 scripts/compose-userdata.py --ipsw "$UNIXNU_IPSW" --board board.toml \
+            --output out/picasso/userdata 2>&1 | tee out/picasso/logs/actions-userdata.log
           ls -lh out/picasso/userdata/
           cat out/picasso/userdata/userdata-root.json
 

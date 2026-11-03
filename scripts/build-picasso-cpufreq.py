@@ -60,13 +60,16 @@ def flags(record_path, source, obj):
 
 
 def main():
-    source = DRIVER / 'CpuFreqProbe.cpp'
-    obj = OUT / 'CpuFreqProbe.o'
-    command, cwd = flags(str(ROOT / RECORD), source, obj)
-    run(command, cwd=cwd)
+    objects = []
+    for name in ('CpuFreqProbe.cpp', 'HidEventsWeak.cpp'):
+        source = DRIVER / name
+        obj = OUT / f'{source.stem}.o'
+        command, cwd = flags(str(ROOT / RECORD), source, obj)
+        run(command, cwd=cwd)
+        objects.append(obj)
     archive = OUT / 'libPicassoCpuFreq.a'
     archive.unlink(missing_ok=True)
-    run(['xcrun', 'ar', 'rcs', archive, obj])
+    run(['xcrun', 'ar', 'rcs', archive, *objects])
     print('picasso-cpufreq:', archive)
 
 

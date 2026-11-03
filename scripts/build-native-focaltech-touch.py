@@ -78,10 +78,11 @@ def inspect_objects(objects):
         _, sections, symbols = platform.inspect_object(obj, native)
         platform.require(not any(s['name'] == '__mod_init_func' for s in sections),
                          'Touch archive must have no automatic initializer')
-        names = {s['name'] for s in symbols if s['kind'] == 1}
-        for owned in ('_native_touch_seq', '_native_touch_count', '_native_touch_writer_lock'):
-            platform.require(owned not in names,
-                             'HID must own the shared touch storage: ' + owned)
+        if obj.name == 'FtProbe.o':
+            for name in ('seq', 'count', 'writer_lock', 'xs', 'ys', 'ids'):
+                matches = [s for s in symbols if s['name'] == '_native_touch_' + name]
+                platform.require(len(matches) == 1 and matches[0]['kind'] == 1,
+                                 'HID must own the shared touch storage: ' + name)
         reports[obj.name] = hashlib.sha256(obj.read_bytes()).hexdigest()
     return reports
 
@@ -94,7 +95,7 @@ def main():
 
     objects = []
     for name, language in (('GeniI2c.c', 'c'), ('FtProbe.cpp', 'c++')):
-        obj = OUT / (name + '.o')
+        obj = OUT / (name.rsplit('.', 1)[0] + '.o')
         compile_command, cwd = flags(args.record, DRIVER / name, obj, language)
         run(compile_command, cwd=cwd)
         objects.append(obj)

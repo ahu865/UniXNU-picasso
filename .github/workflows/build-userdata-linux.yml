@@ -1,0 +1,99 @@
+name: Build userdata root image (Linux)
+
+# Same job as build-userdata.yml, racing it on an Ubuntu runner: the userdata
+# step is supported on Linux (udif.py + the lzfse tool), and Linux runners are
+# far easier to acquire than macOS ones.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: picasso-userdata-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  userdata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+        working-directory: device
+    steps:
+      - name: Check out the picasso device repo
+        uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the LZFSE tool
+        run: |
+          set -eux
+          if ! command -v lzfse >/dev/null; then
+            git clone --depth 1 https://github.com/lzfse/lzfse.git /tmp/lzfse
+            cmake -S /tmp/lzfse -B /tmp/lzfse/build -DCMAKE_BUILD_TYPE=Release
+            cmake --build /tmp/lzfse/build --target lzfse -j 4
+            sudo install -m 0755 "$(find /tmp/lzfse/build -name lzfse -type f -perm -u+x | head -1)" /usr/local/bin/lzfse
+          fi
+          lzfse -v || true
+
+      - name: Free up runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android/sdk/ndk 2>/dev/null || true
+          df -h /
+
+      - name: Check iPhone X inputs
+        run: |
+          python3 scripts/check-picasso-target.py --require-build-inputs \
+            --output out/picasso/logs/target-readiness.json --github-env "$GITHUB_ENV"
+
+      - name: Prepare the isolated upstream source
+        run: |
+          TREE=$(python3 ./unixnu --prepare)
+          echo "UNIXNU_TREE=$TREE" >> "$GITHUB_ENV"
+
+      - name: Download the target IPSW
+        run: |
+          mkdir -p out/ipsw
+          IPSW="out/ipsw/$PICASSO_IPSW_FILE"
+          curl --fail --retry 5 --retry-all-errors --connect-timeout 30 -o "$IPSW" "$PICASSO_IPSW_URL"
+          python3 scripts/check-picasso-target.py --ipsw "$IPSW"
+          ls -lh "$IPSW"
+          echo "UNIXNU_IPSW=$PWD/$IPSW" >> "$GITHUB_ENV"
+
+      - name: Build the userdata root image
+        run: |
+          python3 ./unixnu defconfig picasso_defconfig
+          python3 ./unixnu build userdata --ipsw "$UNIXNU_IPSW" --dry-run 2>&1 | tee out/picasso/logs/actions-userdata-dryrun.log
+          python3 ./unixnu build userdata --ipsw "$UNIXNU_IPSW" 2>&1 | tee out/picasso/logs/actions-userdata.log
+          ls -lh out/picasso/userdata/
+          cat out/picasso/userdata/userdata-root.json
+
+      - name: Split the image and hash the whole
+        run: |
+          IMG=out/picasso/userdata/userdata-root.img
+          ( cd out/picasso/userdata && sha256sum userdata-root.img > userdata-root.img.sha256 )
+          split -b 1900m -d -a 2 "$IMG" out/picasso/userdata/userdata-root.img.part-
+          ls -lh out/picasso/userdata/
+          cat out/picasso/userdata/userdata-root.img.sha256
+
+      - name: Upload userdata parts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: picasso-userdata-parts-${{ github.run_number }}
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+          path: |
+            device/out/picasso/userdata/userdata-root.img.part-*
+            device/out/picasso/userdata/userdata-root.img.sha256
+            device/out/picasso/userdata/userdata-root.json
+            device/out/picasso/logs/actions-userdata*.log

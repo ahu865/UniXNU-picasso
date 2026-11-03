@@ -38,9 +38,10 @@ jobs:
           set -eux
           if ! command -v lzfse >/dev/null; then
             git clone --depth 1 https://github.com/lzfse/lzfse.git /tmp/lzfse
-            cmake -S /tmp/lzfse -B /tmp/lzfse/build -DCMAKE_BUILD_TYPE=Release
-            cmake --build /tmp/lzfse/build --target lzfse -j 4
-            sudo install -m 0755 "$(find /tmp/lzfse/build -name lzfse -type f -perm -u+x | head -1)" /usr/local/bin/lzfse
+            # The upstream CMakeLists predates CMake 3.5; building the sources
+            # directly avoids the policy check entirely.
+            cc -O2 -I /tmp/lzfse/src /tmp/lzfse/src/*.c -o /tmp/lzfse-bin -lm
+            sudo install -m 0755 /tmp/lzfse-bin /usr/local/bin/lzfse
           fi
           lzfse -v || true
 

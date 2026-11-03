@@ -280,16 +280,14 @@ jobs:
             device/out/picasso/tree/build/sheng-platform-power/*.log
             device/out/picasso/tree/build/sheng-platform-power/*.o
 
-      - name: Upload userdata root image
+      - name: Upload tree build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: picasso-userdata-${{ github.run_number }}
+          name: picasso-tree-${{ github.run_number }}
           retention-days: 7
           if-no-files-found: warn
           path: |
-            device/out/picasso/userdata/userdata-root.img
-            device/out/picasso/userdata/userdata-root.json
             device/out/picasso/tree/build/sheng-platform-power/*.a
             device/out/picasso/tree/build/native-aes/*.json
             device/out/picasso/tree/build/native-aes/*.log
@@ -309,5 +307,14 @@ jobs:
             device/out/picasso/ram-data/*.json
             device/out/picasso/ram-data/data.dbrdisk
             device/out/picasso/.config
+
+      - name: Upload userdata root image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: picasso-userdata-${{ github.run_number }}
           if-no-files-found: warn
           retention-days: 7
+          path: |
+            device/out/picasso/userdata/userdata-root.img
+            device/out/picasso/userdata/userdata-root.json

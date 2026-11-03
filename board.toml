@@ -59,8 +59,8 @@ archives = [
   "build-picasso-pmgr.py",
   # CPU/GOP scanout and virtual input use the pinned original graphics and HID ABIs.
   "build-picasso-display.py",
-  # Physical Novatek touch shares the owned HID device and checked firmware.
-  "build-native-novatek-touch.py",
+  # Physical FocalTech FT3518 touch shares the owned HID device (drop-in for the picasso Novatek archive).
+  "build-native-focaltech-touch.py",
 ]
 
 [kernel.prelink]

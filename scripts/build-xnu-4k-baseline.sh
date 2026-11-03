@@ -102,9 +102,10 @@ if [ "$NOVATEK_TOUCH" != 0 ] && [ "$NOVATEK_TOUCH" != 1 ]; then
   exit 1
 fi
 if [ "$NOVATEK_TOUCH" = 1 ]; then
-  # NOVATEK_TOUCH_FW points at a bare Novatek image (or one of the 0x22000 arrays
-  # carved from the stock kernel; the probe skips that trailer itself).
-  if [ "$BOOTSTRAP" = 0 ]; then python3 scripts/build-native-novatek-touch.py ${NOVATEK_TOUCH_FW:+--firmware "$NOVATEK_TOUCH_FW"}; fi
+  # The vangogh build links the FocalTech producer into the same archive path the
+  # kernel contract expects (libNativeNovatekTouch.a); the FT3518 has stock flash
+  # firmware, so NOVATEK_TOUCH_FW has no effect here.
+  if [ "$BOOTSTRAP" = 0 ]; then python3 scripts/build-native-focaltech-touch.py; fi
 fi
 PICASSO_CPUFREQ=${XNU_PICASSO_CPUFREQ:-0}
 if [ "$PICASSO_CPUFREQ" != 0 ] && [ "$PICASSO_CPUFREQ" != 1 ]; then

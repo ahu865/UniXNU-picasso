@@ -264,6 +264,19 @@ def build_adreno(record: dict):
     if not accel_script.is_file():
         raise SystemExit('The fixed upstream staged accelerator builder is required')
     if accel_script.exists():
+        # The pinned upstream script passes '-Wno-unnecessary-virtual-specifier'
+        # without '-Wno-unknown-warning-option' and with -Werror; newer Xcode
+        # toolchains (16.4+) reject the unknown option outright. Make the flags
+        # toolchain-tolerant before running.
+        accel_text = accel_script.read_text(encoding='utf-8')
+        if "'-Wno-unknown-warning-option'" not in accel_text:
+            patched = accel_text.replace(
+                "'-Wno-unnecessary-virtual-specifier'",
+                "'-Wno-unnecessary-virtual-specifier', '-Wno-unknown-warning-option'",
+            )
+            if patched != accel_text:
+                accel_script.write_text(patched, encoding='utf-8')
+                print('NativeAdreno: patched staged accelerator flags for the current toolchain')
         env = os.environ.copy()
         if 'DEVELOPER_DIR' not in env and Path('/Applications/Xcode.app/Contents/Developer').is_dir():
             env['DEVELOPER_DIR'] = '/Applications/Xcode.app/Contents/Developer'

@@ -1,0 +1,15 @@
+name: macOS runner probe
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'runs-on label to probe'
+        required: true
+        default: 'macos-15'
+jobs:
+  probe:
+    runs-on: ${{ github.event.inputs.label }}
+    timeout-minutes: 20
+    steps:
+      - name: uname
+        run: uname -a && sw_vers 2>/dev/null || true

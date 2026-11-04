@@ -102,6 +102,11 @@ struct ProbeIo {
 ProbeIo *gIo;
 Probe *gProbe;
 
+/* The alternate kgsl SMMU aperture, mapped only when the primary does not read
+ * back as an ArmSmmu4K (see opSmmu). File scope: the kernel has no guard
+ * variables for a function-local object with a non-trivial constructor. */
+Mapping gAltSmmu;
+
 /* Firmware is supplied by the integrator; no blob lives in this tree. The
  * pointers are copied under a full barrier and read only after the probe
  * thread starts, which orders them. */
@@ -132,12 +137,11 @@ uint32_t readRegister(const Mapping &mapping, uint32_t dword)
     return read32(mapping, size_t(dword) * sizeof(uint32_t));
 }
 
-bool mapWindow(WindowId id, Mapping &mapping)
+bool mapRange(uint64_t base, size_t bytes, Mapping &mapping)
 {
-    const adreno620::Window &window = adreno620::window(id);
-    if (!window.base || !window.bytes) return false;
-    IODeviceMemory *memory = IODeviceMemory::withRange(window.base,
-        static_cast<IOByteCount>(window.bytes));
+    if (!base || !bytes) return false;
+    IODeviceMemory *memory = IODeviceMemory::withRange(base,
+        static_cast<IOByteCount>(bytes));
     if (!memory) return false;
     mapping.keep = OSSharedPtr<IOMemoryMap>(
         memory->map(kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
@@ -145,8 +149,14 @@ bool mapWindow(WindowId id, Mapping &mapping)
     if (!mapping.keep) return false;
     mapping.base = reinterpret_cast<volatile uint8_t *>(
         mapping.keep->getVirtualAddress());
-    mapping.bytes = static_cast<size_t>(window.bytes);
+    mapping.bytes = bytes;
     return mapping.base != nullptr;
+}
+
+bool mapWindow(WindowId id, Mapping &mapping)
+{
+    const adreno620::Window &window = adreno620::window(id);
+    return mapRange(window.base, static_cast<size_t>(window.bytes), mapping);
 }
 
 Mapping *ensureWindow(WindowId id)
@@ -265,14 +275,48 @@ int opSmmu(void *, const ProbeSmmuPlan &plan)
     gIo->smmu_id[0] = read32(*smmu, 0x20);   /* IDR0 */
     gIo->smmu_id[1] = read32(*smmu, 0x24);   /* IDR1 */
     gIo->smmu_id[2] = read32(*smmu, 0x28);   /* IDR2 */
-    const uint32_t scr0 = read32(*smmu, 0x00);
-    const uint32_t gfsr = read32(*smmu, 0x48);
-    const uint32_t banks = gIo->smmu_id[1] & 0xffu;
-    const uint32_t s2banks = (gIo->smmu_id[1] >> 16) & 0xffu;
-    printf("PICASSO_GPU smmu: idr0=%08x idr1=%08x idr2=%08x scr0=%08x gfsr=%08x "
+    uint32_t scr0 = read32(*smmu, 0x00);
+    uint32_t gfsr = read32(*smmu, 0x48);
+    uint32_t banks = gIo->smmu_id[1] & 0xffu;
+    uint32_t s2banks = (gIo->smmu_id[1] >> 16) & 0xffu;
+    printf("PICASSO_GPU smmu %08llx: idr0=%08x idr1=%08x idr2=%08x scr0=%08x gfsr=%08x "
            "banks=%u s2=%u\n",
+        static_cast<unsigned long long>(adreno620::smmu().base),
         gIo->smmu_id[0], gIo->smmu_id[1], gIo->smmu_id[2], scr0, gfsr, banks,
         s2banks);
+    /* This port has two answers for the kgsl SMMU base and they come from
+     * different trees: the picasso tree the driver was written from puts
+     * kgsl_smmu at 0x3da0000, while the device tree shipped in this phone's own
+     * boot.img describes kgsl-iommu@3d40000 (reg = <0x3d40000 0x10000>, with
+     * gfx3d_user on stream 0xc6). An unclocked or wrong aperture reads back
+     * zeroes, which is distinguishable from a real ArmSmmu4K (IDR1 carries the
+     * context-bank count), so read the other one and keep whichever answers.
+     * The chosen base is what the attach hook is then held to. */
+    if (!banks || banks > 64) {
+        const uint64_t other = 0x3d40000ull;
+        if (other != adreno620::smmu().base &&
+            mapRange(other, static_cast<size_t>(adreno620::smmu().bytes), gAltSmmu)) {
+            Mapping &alternate = gAltSmmu;
+            const uint32_t a0 = read32(alternate, 0x20);
+            const uint32_t a1 = read32(alternate, 0x24);
+            const uint32_t a2 = read32(alternate, 0x28);
+            printf("PICASSO_GPU smmu %08llx: idr0=%08x idr1=%08x idr2=%08x scr0=%08x "
+                   "gfsr=%08x banks=%u s2=%u\n",
+                static_cast<unsigned long long>(other), a0, a1, a2,
+                read32(alternate, 0x00), read32(alternate, 0x48), a1 & 0xffu,
+                (a1 >> 16) & 0xffu);
+            if ((a1 & 0xffu) && (a1 & 0xffu) <= 64) {
+                printf("PICASSO_GPU smmu: %08llx is the live aperture, not %08llx\n",
+                    static_cast<unsigned long long>(other),
+                    static_cast<unsigned long long>(adreno620::smmu().base));
+                gIo->smmu_id[0] = a0;
+                gIo->smmu_id[1] = a1;
+                gIo->smmu_id[2] = a2;
+                banks = a1 & 0xffu;
+                s2banks = (a1 >> 16) & 0xffu;
+            }
+        }
+    }
     if (!banks || banks > 64) {
         printf("PICASSO_GPU smmu: unusable context-bank count\n");
         return -1;

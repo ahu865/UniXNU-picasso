@@ -82,7 +82,18 @@ int stage1(void *ctx) {
     Session *s = static_cast<Session *>(ctx);
     native_wlan_step = 11;
     if (!mapRegion(WLAN_ICNSS_BASE, WLAN_ICNSS_SIZE, s->icnss)) return fail(11, WLAN_ERR_NOMEM);
-    for (unsigned i = 0; i < 8; ++i) native_wlan_regs[i] = rd32(s->icnss.va, 4 * i);
+    // Mapping is address bookkeeping, but reading the identity window while
+    // nothing has voted the WCSS rails/clocks hangs the MMIO bus on this board:
+    // the bring-up thread died silently inside this read on every boot with
+    // sheng-wlan set, and the probe never reached its first printf. The read is
+    // now opt-in behind sheng-wlan-identity-read=1 until a rail-vote backend
+    // exists; skipping it loses eight diagnostic words, not the probe.
+    uint32_t read_identity = 0;
+    const bool identity_read =
+        PE_parse_boot_argn("sheng-wlan-identity-read", &read_identity, sizeof read_identity) && read_identity;
+    if (identity_read) {
+        for (unsigned i = 0; i < 8; ++i) native_wlan_regs[i] = rd32(s->icnss.va, 4 * i);
+    }
 
     native_wlan_step = 12;
     unsigned rails = 0;
@@ -98,11 +109,13 @@ int stage1(void *ctx) {
     // There is no clock or interconnect specifier in the icnss DT node, and this tree has no PMIC/SPMI backend.
     // Nothing is written: see WlanBoard.h for why a guessed GCC write would be unsafe.
     native_wlan_step = 13;
-    printf("PICASSO_WLAN stage1 icnss=%08x %08x %08x %08x %08x %08x %08x %08x rails=%u clocks=%u ic=%u\n",
+    printf("PICASSO_WLAN stage1 icnss=%08x %08x %08x %08x %08x %08x %08x %08x rails=%u clocks=%u ic=%u "
+           "identity=%s\n",
            native_wlan_regs[0], native_wlan_regs[1], native_wlan_regs[2], native_wlan_regs[3],
            native_wlan_regs[4], native_wlan_regs[5], native_wlan_regs[6], native_wlan_regs[7],
            rails, static_cast<unsigned>(WLAN_CLOCK_SPECIFIERS),
-           static_cast<unsigned>(WLAN_ICNSS_INTERCONNECTS));
+           static_cast<unsigned>(WLAN_ICNSS_INTERCONNECTS),
+           identity_read ? "read" : "skipped(no rail vote; sheng-wlan-identity-read=1 forces)");
     return 0;
 }
 

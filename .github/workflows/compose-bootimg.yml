@@ -18,13 +18,21 @@ on:
         description: Skip optional artifact checks for device iteration
         type: boolean
         default: false
+      # macos-15 is an arm64 image and its pool is routinely short of capacity: three dispatch runs in a row sat
+      # fifteen minutes and were released with "The job was not acquired by Runner of type hosted", zero steps run.
+      # macos-15-intel is the same macOS and Xcode on an Intel 4-core VM, a separate pool, and the kernel is
+      # cross-compiled to arm64 either way. Override here if Intel capacity is the one that is short.
+      runs_on:
+        description: Runner label
+        type: string
+        default: macos-15-intel
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runs_on }}
     timeout-minutes: 360
     defaults:
       run:

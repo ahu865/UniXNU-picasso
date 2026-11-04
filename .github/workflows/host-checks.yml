@@ -2,6 +2,11 @@ name: Picasso host regressions
 
 on:
   workflow_dispatch:
+    inputs:
+      runs_on:
+        description: Runner label (macos-15-intel keeps off the short arm64 pool)
+        type: string
+        default: macos-15-intel
   push:
     branches: [feat/ios16, feat/ios16-gpu]
     paths:
@@ -25,7 +30,8 @@ concurrency:
 
 jobs:
   checks:
-    runs-on: macos-15
+    # A push carries no inputs, so the label falls back to the same default as the dispatch form.
+    runs-on: ${{ inputs.runs_on || 'macos-15-intel' }}
     timeout-minutes: 45
     defaults:
       run:

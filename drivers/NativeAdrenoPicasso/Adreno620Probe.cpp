@@ -352,9 +352,35 @@ int opGmuFirmware(void *, uint32_t *crc32, uint32_t *bytes)
         return -1;
     }
     const FirmwareFile &expectedGmu = adreno620::gmu();
-    if (!Adreno620FirmwareCheck(gFirmwareGmu, gFirmwareGmuBytes,
+    const FirmwareFile *matchedGmu = nullptr;
+    if (Adreno620FirmwareCheck(gFirmwareGmu, gFirmwareGmuBytes,
         expectedGmu.bytes, expectedGmu.crc32)) {
-        printf("PICASSO_GPU firmware: %s size/CRC mismatch\n", expectedGmu.name);
+        matchedGmu = &expectedGmu;
+    } else {
+        /* The device's own blob is preferred but is not in any public tree;
+         * accept the family builds the project stages instead, and say which
+         * one went in. The TLV parse below still gates the container. */
+        for (unsigned index = 0; index < adreno620::gmuAlternateCount(); ++index) {
+            const FirmwareFile *alternate = adreno620::gmuAlternate(index);
+            if (alternate && Adreno620FirmwareCheck(gFirmwareGmu,
+                gFirmwareGmuBytes, alternate->bytes, alternate->crc32)) {
+                matchedGmu = alternate;
+                printf("PICASSO_GPU firmware: GMU is the family build "
+                       "%u bytes=%llu crc=%08x (device pin %u bytes=%llu crc=%08x "
+                       "not available)\n", index,
+                    static_cast<unsigned long long>(alternate->bytes),
+                    alternate->crc32,
+                    static_cast<unsigned>(expectedGmu.bytes),
+                    static_cast<unsigned long long>(expectedGmu.bytes),
+                    expectedGmu.crc32);
+                break;
+            }
+        }
+    }
+    if (!matchedGmu) {
+        printf("PICASSO_GPU firmware: %s matches none of the pinned GMU builds "
+               "(size=%llu)\n", expectedGmu.name,
+            static_cast<unsigned long long>(gFirmwareGmuBytes));
         return -1;
     }
     const adreno620::GmuLayout &layout = adreno620::gmuLayout();
@@ -423,15 +449,27 @@ int opGmuFirmware(void *, uint32_t *crc32, uint32_t *bytes)
         gFirmwareZapSegment[1] && gFirmwareZapSegment[2]) {
         if (!Adreno620FirmwareCheck(gFirmwareZapMdt, gFirmwareZapMdtBytes,
             adreno620::zapMdt().bytes, adreno620::zapMdt().crc32)) {
-            printf("PICASSO_GPU firmware: a620_zap.mdt size/CRC mismatch\n");
-            return -1;
+            /* The ZAP signature is checked by PIL/TrustZone at load time, and
+             * the vendor copies differ per MIUI release, so a pin mismatch is
+             * a warning, not a refusal: the container parse below still gates. */
+            printf("PICASSO_GPU firmware: a620_zap.mdt pin mismatch "
+                   "(staged %llu bytes crc=%08x, pinned %llu bytes crc=%08x); "
+                   "TrustZone authenticates it at load\n",
+                static_cast<unsigned long long>(gFirmwareZapMdtBytes),
+                Adreno620Crc32(gFirmwareZapMdt, gFirmwareZapMdtBytes),
+                static_cast<unsigned long long>(adreno620::zapMdt().bytes),
+                adreno620::zapMdt().crc32);
         }
         for (unsigned index = 0; index < 3; ++index) {
             const FirmwareFile &file = adreno620::zapSegment(index);
             if (!Adreno620FirmwareCheck(gFirmwareZapSegment[index],
                 gFirmwareZapSegmentBytes[index], file.bytes, file.crc32)) {
-                printf("PICASSO_GPU firmware: %s size/CRC mismatch\n", file.name);
-                return -1;
+                printf("PICASSO_GPU firmware: %s pin mismatch (staged %llu bytes "
+                       "crc=%08x, pinned %llu bytes crc=%08x)\n", file.name,
+                    static_cast<unsigned long long>(gFirmwareZapSegmentBytes[index]),
+                    Adreno620Crc32(gFirmwareZapSegment[index],
+                        gFirmwareZapSegmentBytes[index]),
+                    static_cast<unsigned>(file.bytes), file.crc32);
             }
         }
         Adreno620MdtImage zap;
@@ -451,8 +489,8 @@ int opGmuFirmware(void *, uint32_t *crc32, uint32_t *bytes)
         printf("PICASSO_GPU firmware: ZAP not staged; secure context unavailable\n");
     }
 
-    *crc32 = expectedGmu.crc32;
-    *bytes = static_cast<uint32_t>(expectedGmu.bytes);
+    *crc32 = matchedGmu->crc32;
+    *bytes = static_cast<uint32_t>(matchedGmu->bytes);
     printf("PICASSO_GPU firmware: gmu blocks=%lu data=%llu sqe=%s version=0x%x "
            "security=%u\n", static_cast<unsigned long>(gmu.blocks),
         static_cast<unsigned long long>(gmu.data_bytes), expectedSqe->name,

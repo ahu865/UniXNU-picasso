@@ -262,6 +262,14 @@ const FirmwareFile &zapElf();
 const FirmwareFile &sqe();
 const FirmwareFile *sqeAlternate();
 const FirmwareFile &gmu();
+/* The device's own a650_gmu.bin (41308 bytes) is the preferred image, but it
+ * was read off the phone's vendor partition and is not in any public tree; the
+ * family ships two other builds of the same TLV container that a620 phones
+ * accept: the linux-firmware / picasso / PixelExperience-vangogh copy (41548)
+ * and the MIUI 10 vangogh vendor copy (39228). Both are pinned so the probe
+ * can load whichever was staged, and logs which one it took. */
+unsigned gmuAlternateCount();
+const FirmwareFile *gmuAlternate(unsigned index);
 
 /* GMU memory layout, from a6xx_gmu_memory_probe for the A650 family (A620 is
  * ADRENO_6XX_GEN3, downstream adreno_is_a650_family). The DTCM base is

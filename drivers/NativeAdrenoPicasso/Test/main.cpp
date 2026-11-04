@@ -195,6 +195,12 @@ static void testBoard()
     CHECK(sqe().bytes == 32008u && sqe().crc32 == 0x8b648790u);
     CHECK(sqeAlternate() && sqeAlternate()->bytes == 31460u);
     CHECK(gmu().bytes == 41308u && gmu().crc32 == 0xc190814du);
+    CHECK(gmuAlternateCount() == 2);
+    CHECK(gmuAlternate(0) && gmuAlternate(0)->bytes == 41548u &&
+        gmuAlternate(0)->crc32 == 0x5c66275cu);
+    CHECK(gmuAlternate(1) && gmuAlternate(1)->bytes == 39228u &&
+        gmuAlternate(1)->crc32 == 0x99792342u);
+    CHECK(gmuAlternate(2) == nullptr);
     CHECK(ZapEntry == 0x5000u && ZapCodeVaddr == 0x5000u &&
         ZapHashVaddr == 0x6000u);
     CHECK(SqeIovaAlignment == 0x1000u && GmuEntry == 0u);
@@ -814,8 +820,14 @@ static void testVendor(const char *directory)
         sqe().crc32));
     CHECK(sqeAlternate() && Adreno620FirmwareCheck(a650.data(), a650.size(),
         sqeAlternate()->bytes, sqeAlternate()->crc32));
-    CHECK(Adreno620FirmwareCheck(gmuImage.data(), gmuImage.size(), gmu().bytes,
-        gmu().crc32));
+    bool gmuPinned = Adreno620FirmwareCheck(gmuImage.data(), gmuImage.size(),
+        gmu().bytes, gmu().crc32);
+    for (unsigned index = 0; index < gmuAlternateCount() && !gmuPinned; ++index) {
+        const FirmwareFile *alternate = gmuAlternate(index);
+        gmuPinned = alternate && Adreno620FirmwareCheck(gmuImage.data(),
+            gmuImage.size(), alternate->bytes, alternate->crc32);
+    }
+    CHECK(gmuPinned);
 
     const uint8_t *segments[3] = {b00.data(), b01.data(), b02.data()};
     const size_t sizes[3] = {b00.size(), b01.size(), b02.size()};

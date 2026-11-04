@@ -55,7 +55,12 @@ def check(tree, work, kernelcache, output):
     builder.require(builder.sha(archive.read_bytes()) == build['archive_sha256'], 'Stale display archive')
     for name in build['members']:
         member = subprocess.check_output(['llvm-ar', 'p', str(archive), name])
-        builder.require(member == (directory / name).read_bytes(), 'Stale display archive member ' + name)
+        loose = (directory / name).read_bytes()
+        # Some host ar builds (Xcode 26) pad stored members to 8 bytes with
+        # newlines. Accept exactly the loose content plus, at most, that pad.
+        builder.require(len(member) >= len(loose) and member[:len(loose)] == loose and
+                        not member[len(loose):].replace(b'\n', b''),
+                        'Stale display archive member ' + name)
     builder.require(set(build['members']) == {'NativeLegacyDisplay.late.o', 'PicassoDisplay.o',
         'NativeKeyStoreEvents.late.o', 'PicassoKeyStore.o', 'PicassoAccelerator.late.o',
         'original-bindings.o', 'NativeHidInput.late.o', 'PicassoHidInput.o',

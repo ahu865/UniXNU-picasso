@@ -278,8 +278,14 @@ def main():
     sources += [ROOT / 'drivers/NativeNovatekTouch/TouchPublish.h']
     sources += [ROOT / 'drivers/NativeAdreno/OriginalAcceleratorABI.h']
     pending = Path(tempfile.mkdtemp(prefix='qualified-display-', dir=out)) / 'libNativeLegacyDisplay.late.a'
-    platform.run(['xcrun', 'ar', 'rcs', pending, *objects], out / 'archive.log')
-    members = platform.check_archive_members(platform.run(['xcrun', 'ar', 't', pending], out / 'members.log').splitlines(), objects)
+    # Build the archive with llvm-ar, the same tool the artifact check uses to
+    # read members back. Xcode 26's ar pads stored members to 8 bytes with
+    # newlines (and widens the extended-name area), which made the round trip
+    # compare stale on the macos-26 runner even though nothing was stale.
+    ar = shutil.which('llvm-ar')
+    require(ar, 'llvm-ar required')
+    platform.run([ar, 'rcs', pending, *objects], out / 'archive.log')
+    members = platform.check_archive_members(platform.run([ar, 't', pending], out / 'members.log').splitlines(), objects)
     archive = out / pending.name
     platform.save_old_archive(archive)
     pending.rename(archive)

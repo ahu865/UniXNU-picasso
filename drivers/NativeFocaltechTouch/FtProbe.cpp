@@ -28,6 +28,7 @@ extern volatile uint32_t native_touch_seq;
 extern volatile uint32_t native_touch_count;
 extern volatile uint32_t native_touch_writer_lock;
 extern volatile int native_touch_xs[12], native_touch_ys[12], native_touch_ids[12];
+extern volatile uint32_t native_touch_hid_reports;
 void native_touch_notify(void);
 void picasso_hid_physical_contact(void);
 static void notifyThunk(void *published) {
@@ -562,6 +563,11 @@ bool publish(const int *xs, const int *ys, const int *ids, int n) {
 
 #define FT_PNT_BUF 63u                     // 3 header bytes + 10 * 6 bytes per contact
 
+// Raw panel coordinates of the last frame, kept for calibration: the panel's own axes are not guaranteed to match
+// the display's, so every contact frame logs both the raw pair and the value handed to the HID layer.
+int gRawX[12], gRawY[12];
+unsigned gRejected;
+
 // Decode a FocalTech report (vendor fts_read_touchdata) into down contacts in the publication convention
 // (0.1 panel pixels). Layout: [0] mode, [1] ?, [2] point count; then 6-byte records starting at 3:
 // [3] event flag (top 2 bits) | x high nibble, [4] x low, [5] id (top 4 bits) | y high nibble, [6] y low.
@@ -573,16 +579,20 @@ int parseReport(const uint8_t *buf, int *xs, int *ys, int *ids) {
         return -2;                          // all-0xFF: the firmware wants a recovery reset
     }
     int n = 0;
+    gRejected = 0;
     for (unsigned i = 0; i < TB_MAX_CONTACTS; ++i) {
         const unsigned base = 6u * i;
         const unsigned id = buf[FTS_ID_OFF + base] >> 4;
         if (id >= TB_MAX_CONTACTS) break;
         const unsigned flag = buf[FTS_X_OFF + base] >> 6;
         if (flag != 0 && flag != 2) continue;   // up
-        const int x = ((buf[FTS_X_OFF + base] & 0x0F) << 8) | buf[FTS_X_OFF + base + 1];
-        const int y = ((buf[FTS_Y_OFF + base] & 0x0F) << 8) | buf[FTS_Y_OFF + base + 1];
-        if (x > TB_PANEL_WIDTH_PX || y > TB_PANEL_HEIGHT_PX) continue;
-        const struct tb_hid_point point = tb_hid_from_panel(x * 10, y * 10);
+        const int rx = ((buf[FTS_X_OFF + base] & 0x0F) << 8) | buf[FTS_X_OFF + base + 1];
+        const int ry = ((buf[FTS_Y_OFF + base] & 0x0F) << 8) | buf[FTS_Y_OFF + base + 1];
+        // Accept either orientation: a landscape-native panel reports x up to 2400, and calibration decides later.
+        if (rx > TB_PANEL_HEIGHT_PX || ry > TB_PANEL_HEIGHT_PX) { ++gRejected; continue; }
+        const struct tb_hid_point point = tb_hid_from_panel(rx * 10, ry * 10);
+        gRawX[n] = rx;
+        gRawY[n] = ry;
         xs[n] = point.x;
         ys[n] = point.y;
         ids[n] = (int)id;
@@ -593,7 +603,7 @@ int parseReport(const uint8_t *buf, int *xs, int *ys, int *ids) {
 
 // Read one frame of contacts. Returns the down-contact count, or < 0 on error (-2 = recovery needed).
 int sampleContacts(Session &s, int *xs, int *ys, int *ids) {
-    static unsigned dumps, errors;
+    static unsigned dumps, errors, contactDumps;
     uint8_t probe[16];
     int r = ftReadRegs(s, 0x00, probe, sizeof probe);
     if (r) {
@@ -616,6 +626,17 @@ int sampleContacts(Session &s, int *xs, int *ys, int *ids) {
     r = ftReadRegs(s, 0x00, buf, FT_PNT_BUF);
     if (r) return -1;
     const int n = parseReport(buf, xs, ys, ids);
+    if (n > 0 && contactDumps < 8) {
+        ++contactDumps;
+        printf("PICASSO_FTS frame n=%d rejected=%u\n", n, gRejected);
+        for (unsigned row = 0; row < FT_PNT_BUF; row += 21) {
+            printf("PICASSO_FTS bytes %02u: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   row, buf[row + 0], buf[row + 1], buf[row + 2], buf[row + 3], buf[row + 4], buf[row + 5],
+                   buf[row + 6], buf[row + 7], buf[row + 8], buf[row + 9], buf[row + 10], buf[row + 11],
+                   buf[row + 12], buf[row + 13], buf[row + 14], buf[row + 15], buf[row + 16], buf[row + 17],
+                   buf[row + 18], buf[row + 19], buf[row + 20]);
+        }
+    }
     if (n >= 0) {
         uint8_t ack = 0;
         (void)ftReadRegs(s, 0x3E, &ack, 1);
@@ -673,9 +694,12 @@ void frameLoop(Session &s) {
                         native_focaltech_touch_last_x = xs[0];
                         native_focaltech_touch_last_y = ys[0];
                     }
-                    if (printed < 8) {
-                        printf("PICASSO_FTS report contacts=%d id=%d x=%d y=%d\n", n, n > 0 ? ids[0] : -1,
-                               n > 0 ? xs[0] : -1, n > 0 ? ys[0] : -1);
+                    if (printed < 160) {
+                        // Raw pair first: it is the only way to tell a mirror/axis swap from a decode error.
+                        printf("PICASSO_FTS report n=%d id=%d raw=%d,%d hid=%d,%d n2=%d raw2=%d,%d hidreports=%u\n",
+                               n, ids[0], gRawX[0], gRawY[0], xs[0], ys[0],
+                               n > 1 ? ids[1] : -1, n > 1 ? gRawX[1] : -1, n > 1 ? gRawY[1] : -1,
+                               __atomic_load_n(&native_touch_hid_reports, __ATOMIC_RELAXED));
                         ++printed;
                     }
                 }

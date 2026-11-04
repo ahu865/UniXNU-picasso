@@ -274,6 +274,15 @@ kernel_args = [
   "offline-legacy-cpu-present=1",
   # Offer frames to the GPU client; keep the CPU path when no client accepts.
   "sheng-fb-gpu=1",
+  # Run the A620 probe through stage 4 (CX clocks, SMMU plan, GMU firmware boot and HFI, CP ring start
+  # plus a no-op IB submit and its fence). The driver is linked but the probe returns on its first line
+  # without this seed, which is why AGXAccelerator never matched and every frame was composited on the CPU.
+  "sheng-gpu=4",
+  # Publish the staged AGXAccelerator for the original Metal discovery (implies sheng-gpu-publish=1).
+  "sheng-gpu-metal=1",
+  # WLAN probe stages 1-4: read the icnss/WCSS identity window, the apps-SMMU geometry for stream 0xc0,
+  # the MBN plan and the transport conclusion. Read-only; nothing here writes the CNSS block.
+  "sheng-wlan=4",
   # State queries only for unprotected RAM Data; no keybag/key operations.
   "picasso-aks-state=1",
   # Software refresh notifications only; panel timing remains firmware-owned.

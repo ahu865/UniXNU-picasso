@@ -283,6 +283,9 @@ kernel_args = [
   # WLAN probe stages 1-4: read the icnss/WCSS identity window, the apps-SMMU geometry for stream 0xc0,
   # the MBN plan and the transport conclusion. Read-only; nothing here writes the CNSS block.
   "sheng-wlan=4",
+  # PMIC buttons: inventory the arbiter, then poll the power-on blocks and the pulled-up key GPIO every 16 ms.
+  # Read-only on the PMICs; the only write is the arbiter's read command word.
+  "sheng-buttons=2",
   # State queries only for unprotected RAM Data; no keybag/key operations.
   "picasso-aks-state=1",
   # Software refresh notifications only; panel timing remains firmware-owned.

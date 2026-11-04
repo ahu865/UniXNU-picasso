@@ -21,6 +21,9 @@ if not (ROOT / 'build/xnu').is_dir() and (ROOT / 'out/picasso/tree/build/xnu').i
     ROOT = ROOT / 'out/picasso/tree'
 
 DRIVER = ROOT / 'drivers/NativeFocaltechTouch'
+# The PMIC button driver rides in this archive because this is the one platform archive the vangogh kernel
+# force-loads for input; a second archive would need a new -force_load line in build-xnu-4k-baseline.sh.
+BUTTONS = ROOT / 'drivers/NativeBoardButtons'
 RECORD = 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'
 OUT = ROOT / 'build/novatek-touch'
 ARCHIVE_NAME = 'libNativeNovatekTouch.a'
@@ -99,6 +102,12 @@ def main():
         compile_command, cwd = flags(args.record, DRIVER / name, obj, language)
         run(compile_command, cwd=cwd)
         objects.append(obj)
+    # The board buttons (side key and both volume keys) hang off the PMICs behind the SPMI arbiter; the touch
+    # probe is the entry point the boot monitor reaches, so it starts the button thread too.
+    buttons = OUT / 'ButtonsProbe.o'
+    compile_command, cwd = flags(args.record, BUTTONS / 'ButtonsProbe.cpp', buttons, 'c++')
+    run(compile_command, cwd=cwd)
+    objects.append(buttons)
 
     object_hashes = inspect_objects(objects)
     archive = OUT / ARCHIVE_NAME

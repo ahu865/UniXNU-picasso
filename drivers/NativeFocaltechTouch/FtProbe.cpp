@@ -31,6 +31,8 @@ extern volatile int native_touch_xs[12], native_touch_ys[12], native_touch_ids[1
 extern volatile uint32_t native_touch_hid_reports;
 void native_touch_notify(void);
 void picasso_hid_physical_contact(void);
+// drivers/NativeBoardButtons/ButtonsProbe.cpp, linked into this archive: the PMIC side/volume keys.
+void native_board_buttons_start(void);
 static void notifyThunk(void *published) {
     if (published) *static_cast<bool *>(published) = true;
     native_touch_notify();
@@ -764,6 +766,10 @@ void touchThread(void *, wait_result_t) {
 
 // Callable from the boot monitor. `sheng-touch=<n>` selects the last stage to run; without it the probe does nothing.
 extern "C" void native_novatek_touch_probe(void) {
+    // The board's side and volume keys are PMIC inputs behind the SPMI arbiter, not touch pins, but this probe is
+    // the one input entry point the boot monitor reaches, so it starts that thread (drivers/NativeBoardButtons,
+    // same archive). The call is strong on purpose: it keeps the button object in the link.
+    native_board_buttons_start();
     unsigned stage = 0;
     if (!PE_parse_boot_argn("sheng-touch", &stage, sizeof stage) || stage < 1) return;
     if (native_focaltech_touch_stage_req) return;

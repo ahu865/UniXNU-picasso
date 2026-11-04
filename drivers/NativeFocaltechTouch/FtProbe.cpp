@@ -573,22 +573,20 @@ unsigned gRejected;
 // [3] event flag (top 2 bits) | x high nibble, [4] x low, [5] id (top 4 bits) | y high nibble, [6] y low.
 // Event flags: 0 down, 1 up, 2 contact.
 int parseReport(const uint8_t *buf, int *xs, int *ys, int *ids) {
+    // Vendor decode (fts_read_touchdata): count in byte 2, records start at byte 3, six bytes each; x msb in the low
+    // nibble of the first byte, y msb in the low nibble of the third, identifier in the high nibble of the third.
     const unsigned num = buf[2] & 0x0Fu;
-    if (num == 0x0F && buf[1] == 0xFF && buf[2] == 0xFF && buf[3] == 0xFF && buf[4] == 0xFF &&
-        buf[5] == 0xFF && buf[6] == 0xFF) {
-        return -2;                          // all-0xFF: the firmware wants a recovery reset
-    }
     int n = 0;
     gRejected = 0;
-    for (unsigned i = 0; i < TB_MAX_CONTACTS; ++i) {
-        const unsigned base = 6u * i;
-        const unsigned id = buf[FTS_ID_OFF + base] >> 4;
-        if (id >= TB_MAX_CONTACTS) break;
-        const unsigned flag = buf[FTS_X_OFF + base] >> 6;
-        if (flag != 0 && flag != 2) continue;   // up
-        const int rx = ((buf[FTS_X_OFF + base] & 0x0F) << 8) | buf[FTS_X_OFF + base + 1];
-        const int ry = ((buf[FTS_Y_OFF + base] & 0x0F) << 8) | buf[FTS_Y_OFF + base + 1];
-        // Accept either orientation: a landscape-native panel reports x up to 2400, and calibration decides later.
+    for (unsigned i = 0; i < num && i < TB_MAX_CONTACTS; ++i) {
+        const unsigned base = FTS_X_OFF + 6u * i;
+        const unsigned id = buf[FTS_ID_OFF + 6u * i] >> 4;
+        const unsigned flag = buf[base] >> 6;
+        if (flag == 1) continue;                       // lift, nothing to publish
+        const int rx = ((buf[base] & 0x0F) << 8) | buf[base + 1];
+        const int ry = ((buf[FTS_Y_OFF + 6u * i] & 0x0F) << 8) | buf[base + 3];
+        // Accept either orientation on purpose: a landscape-native panel reports x up to 2400, and the raw pair in
+        // the log is what decides the mapping. Only obviously out-of-range values are dropped.
         if (rx > TB_PANEL_HEIGHT_PX || ry > TB_PANEL_HEIGHT_PX) { ++gRejected; continue; }
         const struct tb_hid_point point = tb_hid_from_panel(rx * 10, ry * 10);
         gRawX[n] = rx;
@@ -601,34 +599,38 @@ int parseReport(const uint8_t *buf, int *xs, int *ys, int *ids) {
     return n;
 }
 
-// Read one frame of contacts. Returns the down-contact count, or < 0 on error (-2 = recovery needed).
+// Read one frame of contacts. Returns the down-contact count, or < 0 on error.
+//
+// One full read per frame: the point count in byte 2 decides whether there is anything to decode. The previous
+// version peeked 16 bytes and treated "byte 15 == 0xff" as "no data", but byte 15 is the first byte of the third
+// contact record, so every frame carrying one or two fingers was discarded as empty. A single finger tap could
+// never be reported, no matter how hard the panel was pressed.
 int sampleContacts(Session &s, int *xs, int *ys, int *ids) {
-    static unsigned dumps, errors, contactDumps;
-    uint8_t probe[16];
-    int r = ftReadRegs(s, 0x00, probe, sizeof probe);
+    static unsigned errors, frames, idle, contactDumps;
+    uint8_t buf[FT_PNT_BUF];
+    int r = ftReadRegs(s, 0x00, buf, FT_PNT_BUF);
     if (r) {
         if (errors < 6) { printf("PICASSO_FTS frame err=%d\n", r); ++errors; }
         return -1;
     }
-    if (dumps < 3) {
-        printf("PICASSO_FTS frame hdr %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x\n",
-               probe[0], probe[1], probe[2], probe[3], probe[4], probe[5], probe[6], probe[7], probe[8], probe[9],
-               probe[10], probe[11], probe[12], probe[13], probe[14], probe[15]);
-        ++dumps;
-    }
-    if (probe[15] == 0xFF) {
-        // No point data in the short header: the vendor reads the interrupt ack register and moves on.
+    ++frames;
+    const unsigned num = buf[2] & 0x0Fu;
+    if (num == 0 || num > TB_MAX_CONTACTS) {
+        // Heartbeat so the log proves the loop is alive and says what the header looks like while nobody touches.
+        if ((++idle % 300) == 0) {
+            printf("PICASSO_FTS alive frames=%u idle=%u hdr=%02x %02x %02x %02x hidreports=%u\n",
+                   frames, idle, buf[0], buf[1], buf[2], buf[3],
+                   __atomic_load_n(&native_touch_hid_reports, __ATOMIC_RELAXED));
+        }
         uint8_t ack = 0;
-        (void)ftReadRegs(s, 0x3E, &ack, 1);
+        (void)ftReadRegs(s, FTS_REG_INT_ACK, &ack, 1);
         return 0;
     }
-    uint8_t buf[FT_PNT_BUF];
-    r = ftReadRegs(s, 0x00, buf, FT_PNT_BUF);
-    if (r) return -1;
     const int n = parseReport(buf, xs, ys, ids);
-    if (n > 0 && contactDumps < 8) {
+    if (contactDumps < 10) {
         ++contactDumps;
-        printf("PICASSO_FTS frame n=%d rejected=%u\n", n, gRejected);
+        printf("PICASSO_FTS frame num=%u n=%d rejected=%u flag0=%u ev0=%02x\n",
+               num, n, gRejected, (unsigned)(buf[FTS_X_OFF] >> 6), buf[3 + 5]);
         for (unsigned row = 0; row < FT_PNT_BUF; row += 21) {
             printf("PICASSO_FTS bytes %02u: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
                    row, buf[row + 0], buf[row + 1], buf[row + 2], buf[row + 3], buf[row + 4], buf[row + 5],
@@ -637,10 +639,8 @@ int sampleContacts(Session &s, int *xs, int *ys, int *ids) {
                    buf[row + 18], buf[row + 19], buf[row + 20]);
         }
     }
-    if (n >= 0) {
-        uint8_t ack = 0;
-        (void)ftReadRegs(s, 0x3E, &ack, 1);
-    }
+    uint8_t ack = 0;
+    (void)ftReadRegs(s, FTS_REG_INT_ACK, &ack, 1);
     return n;
 }
 

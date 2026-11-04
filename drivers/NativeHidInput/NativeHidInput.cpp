@@ -250,6 +250,7 @@ class NativeHidInput : public IOHIDDevice {
     // (Digitizer/Touch Screen) and the Built-In flag, which a combined keyboard-first descriptor would not provide.
     bool touchOnly=false;
     bool eventDriverFound=false;
+    bool eventDriverLogged=false;
     IOReturn submitReport(IOMemoryDescriptor *report) {
 #if defined(NATIVE_HID_SOURCE_API) && NATIVE_HID_SOURCE_API
         return handleReport(report,kIOHIDReportTypeInput,0);
@@ -327,6 +328,7 @@ class NativeHidInput : public IOHIDDevice {
         OSSafeReleaseNULL(buffer);
         native_hid_input_observed(6,result);
         native_touch_hid_reports=native_touch_hid_reports+1;
+        if(native_touch_hid_reports<=8)printf("PICASSO_HID touch report n=%u result=%x x0=%d y0=%d\n",downCount,result,xs[0],ys[0]);
     }
     // The button driver's thread calls buttonsNotify on every change of the pressed set.
     static void buttonsNotify(void *context,uint32_t mask) {
@@ -348,6 +350,7 @@ class NativeHidInput : public IOHIDDevice {
         if(!eventDriverFound) {
             IORegistryEntry *driver=eventDriver(this,4);
             eventDriverFound=driver!=nullptr;
+            if(!eventDriverLogged){eventDriverLogged=true;printf("PICASSO_HID event driver %s touch=%u only=%u\n",driver?"found":"absent",touchEnabled?1u:0u,touchOnly?1u:0u);}
             if(driver && (touchEnabled || touchOnly))edge::install(driver);
         }
         return eventDriverFound;

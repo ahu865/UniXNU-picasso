@@ -128,7 +128,8 @@ static void real_mdt_test(const char *base) {
 struct fake_hs {
     unsigned requests[8], request_count;
     unsigned indications[4], indication_count;
-    unsigned fail_request, fail_load, fail_wait;
+    unsigned fail_request, fail_wait;
+    int fail_load;
     int msa_ok;
 };
 static int fake_load(void *ctx, const struct wlan_mbn *image) {

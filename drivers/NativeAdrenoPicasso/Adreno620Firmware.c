@@ -236,7 +236,7 @@ Adreno620FwStatus Adreno620GmuParse(const uint8_t *image, size_t bytes,
             if (!regionContains(regions, address, size, &destination))
                 return Adreno620FwUnmapped;
             block->destination = (uint8_t)destination;
-            block->payload_offset = (uint32_t)offset + GmuBlockHeaderBytes;
+            block->payload_offset = (uint32_t)((uint64_t)offset + GmuBlockHeaderBytes);
             block->crc32 = Adreno620Crc32(image + block->payload_offset, size);
             image_crc = Adreno620Crc32Update(image_crc,
                 image + block->payload_offset, size);

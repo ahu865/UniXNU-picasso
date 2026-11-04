@@ -589,6 +589,7 @@ unsigned gRejected;
 int gCalMinX = 0x7fffffff, gCalMaxX = -1, gCalMinY = 0x7fffffff, gCalMaxY = -1;
 static int gRangeX0 = 0, gRangeX1 = TB_PANEL_WIDTH_PX - 1;
 static int gRangeY0 = 0, gRangeY1 = TB_PANEL_HEIGHT_PX - 1;
+static bool gFlipX = TB_HID_MIRROR_X, gFlipY = TB_HID_MIRROR_Y;
 static bool gRangeRead;
 
 static void readCalibrationRange(void) {
@@ -599,11 +600,16 @@ static void readCalibrationRange(void) {
     if (PE_parse_boot_argn("sheng-touch-x1", &value, sizeof value)) gRangeX1 = value;
     if (PE_parse_boot_argn("sheng-touch-y0", &value, sizeof value)) gRangeY0 = value;
     if (PE_parse_boot_argn("sheng-touch-y1", &value, sizeof value)) gRangeY1 = value;
+    // An axis reported in the opposite direction is the one failure the corner pass cannot distinguish from a
+    // correct panel: the same four corners, mirrored. These two make it a boot argument instead of a rebuild.
+    if (PE_parse_boot_argn("sheng-touch-flip-x", &value, sizeof value)) gFlipX = value != 0;
+    if (PE_parse_boot_argn("sheng-touch-flip-y", &value, sizeof value)) gFlipY = value != 0;
     if (gRangeX1 <= gRangeX0) { gRangeX0 = 0; gRangeX1 = TB_PANEL_WIDTH_PX - 1; }
     if (gRangeY1 <= gRangeY0) { gRangeY0 = 0; gRangeY1 = TB_PANEL_HEIGHT_PX - 1; }
-    if (gRangeX0 || gRangeX1 != TB_PANEL_WIDTH_PX - 1 || gRangeY0 || gRangeY1 != TB_PANEL_HEIGHT_PX - 1)
-        printf("PICASSO_FTS cal range x=%d..%d y=%d..%d (panel %dx%d)\n", gRangeX0, gRangeX1, gRangeY0, gRangeY1,
-               TB_PANEL_WIDTH_PX, TB_PANEL_HEIGHT_PX);
+    if (gRangeX0 || gRangeX1 != TB_PANEL_WIDTH_PX - 1 || gRangeY0 || gRangeY1 != TB_PANEL_HEIGHT_PX - 1 ||
+        gFlipX != TB_HID_MIRROR_X || gFlipY != TB_HID_MIRROR_Y)
+        printf("PICASSO_FTS cal range x=%d..%d y=%d..%d flip=%u,%u (panel %dx%d)\n", gRangeX0, gRangeX1, gRangeY0,
+               gRangeY1, gFlipX ? 1 : 0, gFlipY ? 1 : 0, TB_PANEL_WIDTH_PX, TB_PANEL_HEIGHT_PX);
 }
 
 // Raw panel unit to the HID convention, affine over the configured range with both ends clamped.
@@ -641,8 +647,11 @@ int parseReport(const uint8_t *buf, int *xs, int *ys, int *ids) {
         if (rx > gCalMaxX) gCalMaxX = rx;
         if (ry < gCalMinY) gCalMinY = ry;
         if (ry > gCalMaxY) gCalMaxY = ry;
-        const struct tb_hid_point point = {mapAxis(rx, gRangeX0, gRangeX1, TB_HID_X_MAX),
-                                           mapAxis(ry, gRangeY0, gRangeY1, TB_HID_Y_MAX)};
+        const struct tb_hid_point point = {
+            gFlipX ? TB_HID_X_MAX - 1 - mapAxis(rx, gRangeX0, gRangeX1, TB_HID_X_MAX)
+                   : mapAxis(rx, gRangeX0, gRangeX1, TB_HID_X_MAX),
+            gFlipY ? TB_HID_Y_MAX - 1 - mapAxis(ry, gRangeY0, gRangeY1, TB_HID_Y_MAX)
+                   : mapAxis(ry, gRangeY0, gRangeY1, TB_HID_Y_MAX)};
         gRawX[n] = rx;
         gRawY[n] = ry;
         xs[n] = point.x;

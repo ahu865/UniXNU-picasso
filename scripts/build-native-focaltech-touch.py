@@ -118,7 +118,7 @@ def main():
                   objects=object_hashes,
                   archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
                   sources={str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
-                           for path in sorted(DRIVER.glob('*')) if path.is_file()},
+                           for path in sorted(list(DRIVER.glob('*')) + list(BUTTONS.glob('*'))) if path.is_file()},
                   hardware_tested=False)
     (OUT / 'build-report.json').write_text(json.dumps(report, indent=2) + '\n')
 

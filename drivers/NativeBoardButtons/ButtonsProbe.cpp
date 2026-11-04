@@ -73,12 +73,18 @@ constexpr uint32_t kChannelStride = 0x80;
 // Peripheral registers (every PMIC block is 256 bytes).
 constexpr uint8_t kRegPeripheralType = 0x04;
 constexpr uint8_t kRegPeripheralSubtype = 0x05;
-constexpr uint8_t kRegRtStatus = 0x10;                // PON live input state: bit 0 KPDPWR, bit 1 RESIN
+constexpr uint8_t kRegRtStatus = 0x10;                // PON live input state: KPDPWR and RESIN, bit layout below
 // An SPMI GPIO is a different block and its status is NOT at 0x10: Linux pinctrl-spmi-gpio.c has
 // PMIC_GPIO_REG_STATUS = 0x08 (bit 0 the pin level). Reading 0x10 here returned the block's interrupt
 // registers, so the volume key was watched through a register that never changes with the pin.
 constexpr uint8_t kRegGpioStatus = 0x08;
-constexpr uint8_t kRegGpioMode = 0x40;                // [2:0] mode, 0 = input; [5:3] pull
+// The pull does not live in the mode register. Linux pinctrl-spmi-gpio.c (and the hakios PMIC driver, which reads
+// the same eight bytes) puts mode at 0x40, the analogue input control at 0x42 with the pull in bits [2:0] (0-3 up,
+// 4 down, 5 none) and the enable in bit 7 of 0x46. The earlier filter looked for the pull in bits [5:3] of 0x40,
+// which the hardware does not use, so a pulled-up key GPIO could be skipped as "not a key input".
+constexpr uint8_t kRegGpioMode = 0x40;                // [1:0] mode, 0 = input
+constexpr uint8_t kRegGpioPull = 0x42;                // [2:0] pull, < 4 = up
+constexpr uint8_t kRegGpioEnable = 0x46;              // [7] enabled
 
 // Peripheral types (Linux qcom-spmi-pmic, qpnp-power-on).
 constexpr uint8_t kTypePon = 0x01;
@@ -202,18 +208,22 @@ void inventory() {
                    ppid >> 8, ppid & 0xff, n, subtype);
         } else if (type == kTypeGpio && subtype >= kGpioSubtypeFirst && subtype <= kGpioSubtypeLast &&
                    g.gpioCount < kGpioBlocks) {
-            uint8_t mode = 0xff;
+            uint8_t mode = 0xff, pull = 0xff, enable = 0;
             if (!readByte(n, kRegGpioMode, &mode)) continue;
-            // Only a pulled-up input can be a key: mode 0 and a non-zero pull. Everything else on these PMICs
-            // (drives, charger detects, regulators) is skipped so its transitions cannot look like volume up.
-            if ((mode & 0x07) != 0) continue;
-            if (((mode >> 3) & 0x07) == 0) continue;
+            if (!readByte(n, kRegGpioPull, &pull)) continue;
+            const uint8_t pullBits = pull & 0x07;
+            // A block whose 0x46 does not read back as an enable bitmap (0x00 or 0xff) is accepted rather than
+            // dropped, because a wrong enable convention must not hide the key.
+            (void)readByte(n, kRegGpioEnable, &enable);
+            if ((mode & 0x03) != 0) continue;
+            if (pullBits > 3) continue;
+            if (enable != 0x00 && enable != 0xff && (enable & 0x80) == 0) continue;
             Input &in = g.gpio[g.gpioCount++];
             in = Input{};
             in.channel = n;
             in.ppid = ppid;
-            printf("PICASSO_BTN gpio slave=%u peripheral=%02x channel=%u subtype=%02x mode=%02x\n",
-                   ppid >> 8, ppid & 0xff, n, subtype, mode);
+            printf("PICASSO_BTN gpio slave=%u peripheral=%02x channel=%u subtype=%02x mode=%02x pull=%02x enable=%02x\n",
+                   ppid >> 8, ppid & 0xff, n, subtype, mode, pull, enable);
         }
     }
     printf("PICASSO_BTN inventory %u blocks, %u pon, %u key inputs\n",
@@ -292,24 +302,34 @@ void poll() {
             changedBaseline = in.baseline;
         }
     }
-    // Linux qpnp-power-on: bit 0 KPDPWR (the side key), bit 1 RESIN (volume down). Neither the polarity nor the
-    // bit order is assumed blindly: the raw byte, the released byte and the difference are all logged.
-    const bool power = (changed & 0x01) != 0;
-    const bool down = (changed & 0x02) != 0;
+    // PON real-time status carries one bit per key, set while the key is held. Which bit is which is not portable
+    // across the trees that document it: mainline qpnp-power-on uses bit 0 KPDPWR_N / bit 1 RESIN_N, while the
+    // hakios PMIC driver reads the same register as 0x80 KPDPWR / 0x40 RESIN. Both layouts are accepted rather
+    // than guessed, because a wrong pick here is exactly the "the key does nothing" symptom this driver started
+    // with; the raw status, the released byte and the difference are printed so the log names the layout in use.
+    const bool power = (changed & 0x01) != 0 || (changed & 0x80) != 0;
+    const bool down = (changed & 0x02) != 0 || (changed & 0x40) != 0;
     if (power != gPowerDown) {
         gPowerDown = power;
         ++g.presses[0];
-        printf("PICASSO_BTN power %s slave=%u peripheral=%02x status=%02x released=%02x\n",
-               power ? "PRESSED" : "released", changedPpid >> 8, changedPpid & 0xff, changedStatus, changedBaseline);
+        printf("PICASSO_BTN power %s slave=%u peripheral=%02x status=%02x released=%02x diff=%02x bit=%s\n",
+               power ? "PRESSED" : "released", changedPpid >> 8, changedPpid & 0xff, changedStatus, changedBaseline,
+               static_cast<unsigned>(changedStatus ^ changedBaseline),
+               (changedStatus ^ changedBaseline) & 0x01 ? "0" : "7");
     }
     if (down != gVolumeDownDown) {
         gVolumeDownDown = down;
         ++g.presses[1];
-        printf("PICASSO_BTN volume-down %s slave=%u peripheral=%02x status=%02x released=%02x\n",
-               down ? "PRESSED" : "released", changedPpid >> 8, changedPpid & 0xff, changedStatus, changedBaseline);
+        printf("PICASSO_BTN volume-down %s slave=%u peripheral=%02x status=%02x released=%02x diff=%02x bit=%s\n",
+               down ? "PRESSED" : "released", changedPpid >> 8, changedPpid & 0xff, changedStatus, changedBaseline,
+               static_cast<unsigned>(changedStatus ^ changedBaseline),
+               (changedStatus ^ changedBaseline) & 0x02 ? "1" : "6");
     }
-    if ((changed & 0xfcu) != 0)
-        printf("PICASSO_BTN pon bit outside the key map status=%02x released=%02x\n", changedStatus, changedBaseline);
+    // Bits above those two pairs: reported once per transition so a key wired to an unexpected pin is named
+    // instead of silently ignored. The inventory line says how many key inputs each PMIC offers.
+    if ((changed & 0x3cu) != 0)
+        printf("PICASSO_BTN pon bit outside the key map status=%02x released=%02x diff=%02x\n", changedStatus,
+               changedBaseline, static_cast<unsigned>(changedStatus ^ changedBaseline));
 
     // Volume up: the only key on these PMICs that is a plain pulled-up GPIO. It reads low when pressed.
     bool up = false;

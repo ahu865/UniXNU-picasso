@@ -22,10 +22,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: picasso-bootimg-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: macos-15

@@ -627,7 +627,10 @@ void frameLoop(Session &s) {
     native_focaltech_touch_step = 5;
     unsigned pollOnly = 0;
     PE_parse_boot_argn("sheng-touch-poll", &pollOnly, sizeof pollOnly);
-    const bool irqArmed = pollOnly ? false : armTouchIrq(s);
+    // The bit-banged path polls: the vangogh DT wires the panel interrupt to a line this driver has no routing for
+    // (focaltech,irq-gpio = gpio5 while the node's interrupts property names gpio39), and a 10 ms poll is well
+    // inside the panel's report interval anyway.
+    const bool irqArmed = (pollOnly || s.soft) ? false : armTouchIrq(s);
     printf("PICASSO_FTS stage4 loop irq=%u\n", irqArmed ? 1u : 0u);
     uint32_t seen = gIrqEvents;
     unsigned printed = 0;

@@ -271,7 +271,7 @@ int main(int argc, char **argv) {
     // Regulators: ranges, targets and clamping.
     CHECK(WLAN_REGULATOR_COUNT == 5);
     const struct wlan_regulator *r = wlan_regulator_find("vdd-3.3-ch0");
-    CHECK(r && r->node && strcmp(r->node, "pm8150a_l10") == 0);
+    CHECK(r && r->node && strcmp(r->node, "pm6150a_l10") == 0);
     CHECK(wlan_regulator_target_uv(r) == 3312000);
     CHECK(wlan_regulator_validate(r, 3000000) == 0);
     CHECK(wlan_regulator_validate(r, 3312000) == 0);
@@ -282,10 +282,10 @@ int main(int argc, char **argv) {
     CHECK(wlan_regulator_clamp(r, 1000000, &v) == 0 && v == 3000000);
     const struct wlan_regulator *cx = wlan_regulator_find("vdd-cx-mx");
     CHECK(cx && wlan_regulator_target_uv(cx) == 0);   // no override: leave the bootloader value
-    CHECK(wlan_regulator_validate(cx, 352000) == 0 && wlan_regulator_validate(cx, 951999) == 0);
-    CHECK(wlan_regulator_validate(cx, 351999) == -22 && wlan_regulator_validate(cx, 952001) == -22);
-    CHECK(wlan_regulator_find("vdd-1.3-rfa")->min_uv == 1144000);
-    CHECK(wlan_regulator_find("vdd-1.8-xo")->max_uv == 1984000);
+    CHECK(wlan_regulator_validate(cx, 352000) == 0 && wlan_regulator_validate(cx, 800999) == 0);
+    CHECK(wlan_regulator_validate(cx, 351999) == -22 && wlan_regulator_validate(cx, 801001) == -22);
+    CHECK(wlan_regulator_find("vdd-1.3-rfa")->min_uv == 1170000);
+    CHECK(wlan_regulator_find("vdd-1.8-xo")->max_uv == 1980000);
     CHECK(wlan_regulator_find("nope") == NULL);
 
     // SMMU and MSA math.
@@ -298,11 +298,11 @@ int main(int argc, char **argv) {
     CHECK(sid == WLAN_SMMU_SID);
     CHECK(wlan_smmu_stream_id(0x19, WLAN_SMMU_SID, 1, &sid) == -22);
     CHECK(wlan_smmu_stream_id(WLAN_APPS_SMMU_PHANDLE, WLAN_SMMU_SID, 0x8000, &sid) == -22);
-    CHECK(wlan_smmu_smr(WLAN_SMMU_SID, WLAN_SMMU_SID_MASK) == 0x000100c0u);
+    CHECK(wlan_smmu_smr(WLAN_SMMU_SID, WLAN_SMMU_SID_MASK) == 0x00010020u);
 
     // IRQ table from the DT (raw SPI numbers).
-    CHECK(wlan_icnss_irq_spi[0] == 0x84 && wlan_icnss_irq_spi[11] == 0x57);
-    CHECK(wlan_icnss_irq_spi[2] == 0x19f && wlan_icnss_irq_spi[4] == 0x1a1);
+    CHECK(wlan_icnss_irq_spi[0] == 0x19e && wlan_icnss_irq_spi[11] == 0x1a9);
+    CHECK(wlan_icnss_irq_spi[2] == 0x1a0 && wlan_icnss_irq_spi[4] == 0x1a2);
 
     // Transport conclusion.
     CHECK(wlan_transport_classify(1, 0, 0, 1) == WLAN_TRANSPORT_SNOC);

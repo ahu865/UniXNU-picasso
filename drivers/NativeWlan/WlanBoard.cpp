@@ -4,19 +4,20 @@
 // declaration in extern "C".
 #include "WlanBoard.h"
 
-// Raw SPI numbers from picasso.dts:7305, in DT order. The GIC INTID is 32 + SPI.
+// Raw SPI numbers from the vangogh icnss node, in DT order: twelve consecutive lines, 0x19e to 0x1a9.
+// The GIC INTID is 32 + SPI.
 const uint16_t wlan_icnss_irq_spi[WLAN_ICNSS_IRQ_COUNT] = {
-    0x084, 0x051, 0x19f, 0x1a0, 0x1a1, 0x056,
-    0x05e, 0x060, 0x052, 0x077, 0x078, 0x057,
+    0x19e, 0x19f, 0x1a0, 0x1a1, 0x1a2, 0x1a3,
+    0x1a4, 0x1a5, 0x1a6, 0x1a7, 0x1a8, 0x1a9,
 };
 
-// Voltage values are decimal microvolts converted from the hex in picasso.dts (see WlanBoard.h for line numbers).
+// Voltage values are decimal microvolts; rails and ranges resolved from the vangogh device tree (WlanBoard.h).
 const struct wlan_regulator wlan_regulators[WLAN_REGULATOR_COUNT] = {
-    {"vdd-cx-mx",   "pm8150_l1",   "pm8150_l1",   352000,  952000,       0,       0, 0},
-    {"vdd-1.8-xo",  "pm8150_l14",  "pm8150_l14",  1616000, 1984000,      0,       0, 0},
-    {"vdd-1.3-rfa", "pm8150a_l2",  "pm8150a_l2",  1144000, 1328000,      0,       0, 0},
-    {"vdd-3.3-ch1", "pm8150a_l11", "pm8150a_l11", 3000000, 3312000, 3000000, 3312000, 1},
-    {"vdd-3.3-ch0", "pm8150a_l10", "pm8150a_l10", 3000000, 3312000, 3000000, 3312000, 1},
+    {"vdd-cx-mx",   "pm6350_l4",   "pm6350_l4",    352000,  801000,       0,       0, 0},
+    {"vdd-1.8-xo",  "pm6350_l7",   "pm6350_l7",   1620000, 1980000,       0,       0, 0},
+    {"vdd-1.3-rfa", "pm6150a_l2",  "pm6150a_l2",  1170000, 1305000, 1224000, 1304000, 1},
+    {"vdd-3.3-ch1", "pm6150a_l11", "pm6150a_l11", 3000000, 3401000, 3000000, 3312000, 1},
+    {"vdd-3.3-ch0", "pm6150a_l10", "pm6150a_l10", 3000000, 3401000, 3000000, 3312000, 1},
 };
 
 const struct wlan_regulator *wlan_regulator_find(const char *supply) {

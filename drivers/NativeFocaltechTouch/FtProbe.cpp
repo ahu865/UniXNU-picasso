@@ -559,6 +559,14 @@ bool publish(const int *xs, const int *ys, const int *ids, int n) {
     pub.sink_context = &published;
     pub.writer_lock = &native_touch_writer_lock;
     nvt_touch_publish(&pub, xs, ys, ids, static_cast<unsigned>(n));
+    // The first physical contacts, on this side of the HID boundary: the value the panel reported, the value handed
+    // to the publication, and whether the sink took it. The HID side prints its own first reports; comparing the two
+    // tells a frame that never reached HID from one the event driver dropped.
+    static unsigned published_;
+    if (n > 0 && published_ < 12) {
+        ++published_;
+        printf("PICASSO_FTS publish n=%d x=%d y=%d ok=%d\n", n, xs[0], ys[0], published ? 1 : 0);
+    }
     if (published) physicalActive = n > 0;
     return published;
 }
@@ -570,6 +578,43 @@ bool publish(const int *xs, const int *ys, const int *ids, int n) {
 int gRawX[12], gRawY[12];
 unsigned gRejected;
 
+// Calibration. The four-corner pass on the phone reached x 22..1063 and y 18..2274 out of 1080x2400, i.e. every edge
+// is reachable and the panel reports display pixels; the defaults below are therefore the panel itself, and nothing
+// here has to be right before the first touch. Two things are left open for a panel that turns out not to cover the
+// whole display:
+//   * gCalMin/gCalMax collect the raw extremes of every accepted contact and are printed on the heartbeat, so one
+//     pass around the edges of the screen is enough to read the real range out of the log;
+//   * sheng-touch-x0/x1/y0/y1 override the range at boot, so a measured range can be tried without a rebuild.
+// Values are raw panel units (pixels), min inclusive, max inclusive.
+int gCalMinX = 0x7fffffff, gCalMaxX = -1, gCalMinY = 0x7fffffff, gCalMaxY = -1;
+static int gRangeX0 = 0, gRangeX1 = TB_PANEL_WIDTH_PX - 1;
+static int gRangeY0 = 0, gRangeY1 = TB_PANEL_HEIGHT_PX - 1;
+static bool gRangeRead;
+
+static void readCalibrationRange(void) {
+    if (gRangeRead) return;
+    gRangeRead = true;
+    int value = 0;
+    if (PE_parse_boot_argn("sheng-touch-x0", &value, sizeof value)) gRangeX0 = value;
+    if (PE_parse_boot_argn("sheng-touch-x1", &value, sizeof value)) gRangeX1 = value;
+    if (PE_parse_boot_argn("sheng-touch-y0", &value, sizeof value)) gRangeY0 = value;
+    if (PE_parse_boot_argn("sheng-touch-y1", &value, sizeof value)) gRangeY1 = value;
+    if (gRangeX1 <= gRangeX0) { gRangeX0 = 0; gRangeX1 = TB_PANEL_WIDTH_PX - 1; }
+    if (gRangeY1 <= gRangeY0) { gRangeY0 = 0; gRangeY1 = TB_PANEL_HEIGHT_PX - 1; }
+    if (gRangeX0 || gRangeX1 != TB_PANEL_WIDTH_PX - 1 || gRangeY0 || gRangeY1 != TB_PANEL_HEIGHT_PX - 1)
+        printf("PICASSO_FTS cal range x=%d..%d y=%d..%d (panel %dx%d)\n", gRangeX0, gRangeX1, gRangeY0, gRangeY1,
+               TB_PANEL_WIDTH_PX, TB_PANEL_HEIGHT_PX);
+}
+
+// Raw panel unit to the HID convention, affine over the configured range with both ends clamped.
+static int mapAxis(int raw, int low, int high, int hidMax) {
+    const long long span = (long long)high - low;
+    long long v = span > 0 ? ((long long)raw - low) * (hidMax - 1) / span : 0;
+    if (v < 0) v = 0;
+    if (v > hidMax - 1) v = hidMax - 1;
+    return (int)v;
+}
+
 // Decode a FocalTech report (vendor fts_read_touchdata) into down contacts in the publication convention
 // (0.1 panel pixels). Layout: [0] mode, [1] ?, [2] point count; then 6-byte records starting at 3:
 // [3] event flag (top 2 bits) | x high nibble, [4] x low, [5] id (top 4 bits) | y high nibble, [6] y low.
@@ -580,6 +625,7 @@ int parseReport(const uint8_t *buf, int *xs, int *ys, int *ids) {
     const unsigned num = buf[2] & 0x0Fu;
     int n = 0;
     gRejected = 0;
+    readCalibrationRange();
     for (unsigned i = 0; i < num && i < TB_MAX_CONTACTS; ++i) {
         const unsigned base = FTS_X_OFF + 6u * i;
         const unsigned id = buf[FTS_ID_OFF + 6u * i] >> 4;
@@ -587,10 +633,16 @@ int parseReport(const uint8_t *buf, int *xs, int *ys, int *ids) {
         if (flag == 1) continue;                       // lift, nothing to publish
         const int rx = ((buf[base] & 0x0F) << 8) | buf[base + 1];
         const int ry = ((buf[FTS_Y_OFF + 6u * i] & 0x0F) << 8) | buf[base + 3];
-        // Accept either orientation on purpose: a landscape-native panel reports x up to 2400, and the raw pair in
-        // the log is what decides the mapping. Only obviously out-of-range values are dropped.
-        if (rx > TB_PANEL_HEIGHT_PX || ry > TB_PANEL_HEIGHT_PX) { ++gRejected; continue; }
-        const struct tb_hid_point point = tb_hid_from_panel(rx * 10, ry * 10);
+        // Per-axis bounds. This used to compare both coordinates against the height, which let a torn read through:
+        // one frame in the boot-7 log carried x=1279 (byte 4 read as 0xff) on a 1080-wide panel, and 1279 is inside
+        // 2400, so the finger jumped to the right edge for a frame and back. The panel is portrait-native here.
+        if (rx >= TB_PANEL_WIDTH_PX || ry >= TB_PANEL_HEIGHT_PX) { ++gRejected; continue; }
+        if (rx < gCalMinX) gCalMinX = rx;
+        if (rx > gCalMaxX) gCalMaxX = rx;
+        if (ry < gCalMinY) gCalMinY = ry;
+        if (ry > gCalMaxY) gCalMaxY = ry;
+        const struct tb_hid_point point = {mapAxis(rx, gRangeX0, gRangeX1, TB_HID_X_MAX),
+                                           mapAxis(ry, gRangeY0, gRangeY1, TB_HID_Y_MAX)};
         gRawX[n] = rx;
         gRawY[n] = ry;
         xs[n] = point.x;
@@ -623,6 +675,14 @@ int sampleContacts(Session &s, int *xs, int *ys, int *ids) {
             printf("PICASSO_FTS alive frames=%u idle=%u hdr=%02x %02x %02x %02x hidreports=%u\n",
                    frames, idle, buf[0], buf[1], buf[2], buf[3],
                    __atomic_load_n(&native_touch_hid_reports, __ATOMIC_RELAXED));
+        }
+        // The raw extremes seen since the last line: one pass around the edges of the screen and the log says what
+        // range the panel really covers. Quiet while nobody touches, so an idle boot does not fill the log.
+        static int shownMinX, shownMaxX, shownMinY, shownMaxY;
+        if (gCalMaxX >= 0 && (gCalMinX != shownMinX || gCalMaxX != shownMaxX || gCalMinY != shownMinY || gCalMaxY != shownMaxY)) {
+            shownMinX = gCalMinX; shownMaxX = gCalMaxX; shownMinY = gCalMinY; shownMaxY = gCalMaxY;
+            printf("PICASSO_FTS cal x=%d..%d y=%d..%d of %dx%d\n", shownMinX, shownMaxX, shownMinY, shownMaxY,
+                   TB_PANEL_WIDTH_PX, TB_PANEL_HEIGHT_PX);
         }
         uint8_t ack = 0;
         (void)ftReadRegs(s, FTS_REG_INT_ACK, &ack, 1);

@@ -44,12 +44,16 @@ static const unsigned char descriptor[]={
     0x75,0x01,0x95,0x04,0x81,0x02,
     0x75,0x04,0x95,0x01,0x81,0x03,0xc0
 };
-// Report 3: ten-finger Touch Screen collection (Tip Switch, Touch Valid, Contact Identifier, X, Y per finger, then Contact Count).
-// Touch Valid (0x47) is the finger confidence: IOHIDEventDriver turns a finger transducer whose value is 0 into a hand (palm), which
-// multi-finger and system edge gestures ignore, so every finger, down or lifting, sends 1.
+// Report 3: ten-finger Touch Screen collection (Tip Switch, In Range, Touch Valid, Contact Identifier, X, Y per finger, then Contact Count).
+// In Range (0x32) is the bit IOHIDEventDriver turns into kIOHIDDigitizerEventRange, and a finger event without it is not
+// "on the digitizer": backboardd accepts the report (result 0) and UIKit never begins a touch. The descriptor this driver
+// shipped with had Tip Switch and Touch Valid only, which is why the boot-7 log's 160 accepted reports moved nothing.
+// Touch Valid (0x47) stays as the finger confidence: IOHIDEventDriver turns a finger transducer whose value is 0 into a
+// hand (palm), which multi-finger and system edge gestures ignore, so every finger, down or lifting, sends 1.
+// Bit order in the first byte: 0 tip, 1 range, 2 valid, 3-7 padding.
 // Coordinates are normalised to 0..32767 on both axes by the producer.
 #define FINGER_DESC \
-    0x09,0x22,0xa1,0x02, 0x09,0x42,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x01,0x81,0x02, 0x09,0x47,0x81,0x02, 0x75,0x06,0x95,0x01,0x81,0x03, \
+    0x09,0x22,0xa1,0x02, 0x09,0x42,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x01,0x81,0x02, 0x09,0x32,0x81,0x02, 0x09,0x47,0x81,0x02, 0x75,0x05,0x95,0x01,0x81,0x03, \
     0x09,0x51,0x75,0x08,0x95,0x01,0x15,0x00,0x26,0xff,0x00,0x81,0x02, \
     0x05,0x01,0x09,0x30,0x15,0x00,0x26,0xff,0x7f,0x75,0x10,0x95,0x01,0x81,0x02, 0x09,0x31,0x81,0x02, 0x05,0x0d, 0xc0,
 static const unsigned char touchDescriptor[]={
@@ -238,6 +242,15 @@ static void install(IORegistryEntry *driver) {
 }
 #endif
 #endif
+// The link counters in one line: install=stats[0] (1 installed, 2 another class, 3 a slot did not check out),
+// begun=stats[1] contacts the wrapper saw start, edge=stats[2] of those within the edge band, skipped=stats[3] children
+// it could not read, multi=reports with 2+ fingers / the most fingers / explicit tip-up reports. begun staying 0 while
+// reports are submitted means the events never reached dispatchEvent on this OS build, not that the panel is quiet.
+static void dump(void) {
+    printf("PICASSO_HID link install=%u begun=%u edge=%u skipped=%u multi=%u/%u/%u\n",
+           native_touch_edge_stats[0], native_touch_edge_stats[1], native_touch_edge_stats[2], native_touch_edge_stats[3],
+           native_touch_hid_multi[0], native_touch_hid_multi[1], native_touch_hid_multi[2]);
+}
 }  // namespace edge
 class NativeHidInput : public IOHIDDevice {
     OSDeclareDefaultStructors(NativeHidInput)
@@ -296,7 +309,7 @@ class NativeHidInput : public IOHIDDevice {
         for(unsigned i=0;i<count && slot<TOUCH_FINGERS;++i,++slot) {
             unsigned x=transformCoordinate(xs[i],30480),y=transformCoordinate(ys[i],20320);
             unsigned char *f=report+1+slot*6;
-            f[0]=3;f[1]=(unsigned char)(ids[i]&0xff);f[2]=(unsigned char)x;f[3]=(unsigned char)(x>>8);f[4]=(unsigned char)y;f[5]=(unsigned char)(y>>8);   // tip, valid
+            f[0]=7;f[1]=(unsigned char)(ids[i]&0xff);f[2]=(unsigned char)x;f[3]=(unsigned char)(x>>8);f[4]=(unsigned char)y;f[5]=(unsigned char)(y>>8);   // tip, in range, valid
             nextIds[slot]=ids[i];nextX[slot]=(int)x;nextY[slot]=(int)y;
         }
         const unsigned downCount=slot;
@@ -312,7 +325,7 @@ class NativeHidInput : public IOHIDDevice {
             for(unsigned i=0;i<downCount && !kept;++i)kept=(ids[i]&0xff)==(id&0xff);
             if(kept || slot>=TOUCH_FINGERS)continue;
             unsigned char *f=report+1+slot*6;
-            f[0]=2;f[1]=(unsigned char)(id&0xff);   // tip up, valid
+            f[0]=6;f[1]=(unsigned char)(id&0xff);   // tip up, still in range and valid: the driver needs the range bit to deliver the lift
             f[2]=(unsigned char)self->prevX[j];f[3]=(unsigned char)(self->prevX[j]>>8);
             f[4]=(unsigned char)self->prevY[j];f[5]=(unsigned char)(self->prevY[j]>>8);
             ++slot;edge::native_touch_hid_multi[2]=edge::native_touch_hid_multi[2]+1;
@@ -329,6 +342,9 @@ class NativeHidInput : public IOHIDDevice {
         native_hid_input_observed(6,result);
         native_touch_hid_reports=native_touch_hid_reports+1;
         if(native_touch_hid_reports<=8)printf("PICASSO_HID touch report n=%u result=%x x0=%d y0=%d\n",downCount,result,xs[0],ys[0]);
+        // One line per 40 reports: whether the wrapper is installed and whether the event driver is dispatching at all.
+        static uint32_t linkNext=1;
+        if(native_touch_hid_reports>=linkNext){edge::dump();linkNext=native_touch_hid_reports+40;}
     }
     // The button driver's thread calls buttonsNotify on every change of the pressed set.
     static void buttonsNotify(void *context,uint32_t mask) {

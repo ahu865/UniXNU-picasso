@@ -73,7 +73,11 @@ constexpr uint32_t kChannelStride = 0x80;
 // Peripheral registers (every PMIC block is 256 bytes).
 constexpr uint8_t kRegPeripheralType = 0x04;
 constexpr uint8_t kRegPeripheralSubtype = 0x05;
-constexpr uint8_t kRegRtStatus = 0x10;                // live input state
+constexpr uint8_t kRegRtStatus = 0x10;                // PON live input state: bit 0 KPDPWR, bit 1 RESIN
+// An SPMI GPIO is a different block and its status is NOT at 0x10: Linux pinctrl-spmi-gpio.c has
+// PMIC_GPIO_REG_STATUS = 0x08 (bit 0 the pin level). Reading 0x10 here returned the block's interrupt
+// registers, so the volume key was watched through a register that never changes with the pin.
+constexpr uint8_t kRegGpioStatus = 0x08;
 constexpr uint8_t kRegGpioMode = 0x40;                // [2:0] mode, 0 = input; [5:3] pull
 
 // Peripheral types (Linux qcom-spmi-pmic, qpnp-power-on).
@@ -231,7 +235,7 @@ void learnBaseline() {
         }
         for (unsigned i = 0; i < g.gpioCount; ++i) {
             Input &in = g.gpio[i];
-            if (!readByte(in.channel, kRegRtStatus, &value)) { settled = false; continue; }
+            if (!readByte(in.channel, kRegGpioStatus, &value)) { settled = false; continue; }
             if (!in.live) { in.baseline = value; in.live = true; }
             else if (value != in.baseline) settled = false;
             in.last = value;
@@ -312,7 +316,7 @@ void poll() {
     unsigned upChannel = 0;
     for (unsigned i = 0; i < g.gpioCount; ++i) {
         Input &in = g.gpio[i];
-        if (!readByte(in.channel, kRegRtStatus, &value)) continue;
+        if (!readByte(in.channel, kRegGpioStatus, &value)) continue;
         sample(in, value);
         if (in.steady >= kSettle && (value & 0x01) == 0 && (in.baseline & 0x01) != 0) {
             up = true;

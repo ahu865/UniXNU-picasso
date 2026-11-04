@@ -125,17 +125,26 @@ int stage2(void *ctx) {
     if (count > 128) count = 128;
     uint32_t slot = 0xffffffffu, smr = 0, s2cr = 0;
     unsigned matches = 0;
-    for (unsigned i = 0; i < count; ++i) {
-        const uint32_t candidate = rd32(s->smmu.va, WLAN_SMMU_SMR_BASE + 4 * i);
-        if (!(candidate & 0x80000000u)) continue;
-        if ((candidate & 0xffffu) != WLAN_SMMU_SID) continue;
-        ++matches;
-        if (slot == 0xffffffffu) {
-            slot = i;
-            smr = candidate;
-            s2cr = rd32(s->smmu.va, WLAN_SMMU_S2CR_BASE + 4 * i);
+    // The icnss node names one stream (0x20 in the tree this board boots), but every picasso-derived note in this
+    // driver says 0xc0. Scan for both rather than assert one: the SMMU is the authority on which stream the WLAN
+    // context bank is actually mapped to, and the log then says which it was.
+    static const uint16_t candidates[] = {WLAN_SMMU_SID, 0xc0};
+    uint16_t chosen = WLAN_SMMU_SID;
+    for (unsigned c = 0; c < sizeof candidates / sizeof candidates[0] && !matches; ++c) {
+        for (unsigned i = 0; i < count; ++i) {
+            const uint32_t candidate = rd32(s->smmu.va, WLAN_SMMU_SMR_BASE + 4 * i);
+            if (!(candidate & 0x80000000u)) continue;
+            if ((candidate & 0xffffu) != candidates[c]) continue;
+            ++matches;
+            if (slot == 0xffffffffu) {
+                slot = i;
+                smr = candidate;
+                s2cr = rd32(s->smmu.va, WLAN_SMMU_S2CR_BASE + 4 * i);
+            }
         }
+        if (matches) chosen = candidates[c];
     }
+    native_wlan_sid = chosen;
     native_wlan_smmu_slot = slot;
     native_wlan_smmu_smr = smr;
     native_wlan_smmu_s2cr = s2cr;

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// picasso (Qualcomm SM7250 "lito") WLAN platform facts and the pure helpers around them. Every constant states
-// its source. Nothing here touches hardware; WlanProbe.cpp owns the MMIO. Host-tested by Test/main.c.
+// vangogh (Qualcomm SM7250 "lito", Xiaomi Mi 10 Youth) WLAN platform facts and the pure helpers around them. Every
+// constant states its source. Nothing here touches hardware; WlanProbe.cpp owns the MMIO. Host-tested by Test/main.c.
+//
+// The values were first taken from a picasso (POCO X5 Pro) device tree and have been re-resolved one by one against
+// this board's own vangogh device tree, which is what the phone boots with: the icnss iommu stream, the MSA region,
+// the twelve interrupt lines and all five regulator rails differ. WlanBoard.h says where each one now comes from.
 //
 // The WLAN part on this board is the integrated WCSS block served over the Qualcomm "SNOC" path: there is no PCIe
 // endpoint and no SDIO function for WLAN in the device tree, and the vendor qcacld module registers a SNOC bus
@@ -42,16 +46,18 @@ enum wlan_transport {
 #define WLAN_IPA_IOVA_BASE 0xb0000000ULL
 #define WLAN_IPA_IOVA_SIZE 0x10000ULL
 
-// iommus = <0x18 0xc0 0x01> (picasso.dts:7304). Phandle 0x18 is apps_smmu: apps-smmu@15000000,
-// reg = <0x15000000 0x100000 0x15182000 0x20>, #iommu-cells = <2> (picasso.dts:10710-10728). With two iommu
-// cells the tuple is <phandle stream-id mask>; stream-id 0xc0, mask 0x1. The mask is the SMR ID mask (15 bits),
-// so this stream matches only 0xc0. The IPA data path uses a second stream, 0x521, on ipa_smmu_wlan.
+// iommus = <0x17 0x20 0x01> (vangogh-sm7250.dtsi, icnss node). Phandle 0x17 is apps_smmu: apps-smmu@15000000,
+// reg = <0x15000000 0x100000 0x15182000 0x20>, #iommu-cells = <2>. With two iommu cells the tuple is
+// <phandle stream-id mask>; stream-id 0x20, mask 0x1. The mask is the SMR ID mask (15 bits), so this stream
+// matches only 0x20. This board's IPA data path uses stream 0x441 on ipa_smmu_wlan (see WLAN_IPA_SMMU_SID).
+// (The picasso tree this driver was first written from has 0xc0/0x521; both differ, so they are taken from the
+// vangogh device tree that this board actually boots with.)
 #define WLAN_APPS_SMMU_BASE 0x15000000ULL
 #define WLAN_APPS_SMMU_SIZE 0x100000ULL
-#define WLAN_APPS_SMMU_PHANDLE 0x18
-#define WLAN_SMMU_SID 0xc0
+#define WLAN_APPS_SMMU_PHANDLE 0x17
+#define WLAN_SMMU_SID 0x20
 #define WLAN_SMMU_SID_MASK 0x1
-#define WLAN_IPA_SMMU_SID 0x521
+#define WLAN_IPA_SMMU_SID 0x441
 // QSMMU-v500 register offsets used by the read-only plan (same layout as drivers/NativeUfs/SmmuTakeover.h).
 #define WLAN_SMMU_IDR0 0x20
 #define WLAN_SMMU_IDR1 0x24
@@ -66,36 +72,35 @@ enum wlan_transport {
 #define WLAN_IOMMU_IOVA_BASE 0xa0000000ULL
 #define WLAN_IOMMU_IOVA_SIZE 0x10000000ULL
 
-// MSA (WLAN firmware memory). qcom,wlan-msa-fixed-region = <0x99> (picasso.dts:7306); phandle 0x99 is
-// pil_wlan_fw_mem: pil_wlan_fw_region@8ba00000, no-map, reg = <0x00 0x8ba00000 0x00 0x200000>
-// (picasso.dts:450-454). 2 MiB, page-aligned. The vendor kernel logs "MSA pa: ... MSA Memory Size: 0x%x" and
-// "Failed to translate MSA PA from device-tree" (stock-kernel strings), so the fixed region is the only MSA
-// source for this board; there is no qcom,wlan-msa-memory property in this DT. The reserved-memory label says
-// "pil_wlan_fw", but the only consumer is icnss's MSA property: this is the MSA pool, not a separate AP-side PIL
-// image load region.
-#define WLAN_MSA_BASE 0x8ba00000ULL
+// MSA (WLAN firmware memory). qcom,wlan-msa-fixed-region = <0xac> resolves to
+// reserved-memory/wlan_fw_region@8b500000, compatible "removed-dma-pool", reg = <0x00 0x8b500000 0x00 0x200000>.
+// 2 MiB, page-aligned. The vendor kernel logs "MSA pa: ... MSA Memory Size: 0x%x" and "Failed to translate MSA PA
+// from device-tree", so the fixed region is the only MSA source for this board; there is no qcom,wlan-msa-memory
+// property in this DT. The reserved-memory label says "pil_wlan_fw", but the only consumer is icnss's MSA property:
+// this is the MSA pool, not a separate AP-side PIL image load region.
+#define WLAN_MSA_BASE 0x8b500000ULL
 #define WLAN_MSA_SIZE 0x200000ULL
 
-// Adjacent modem PIL region, for orientation only: modem_wlan_region@8c000000, 0xf800000 bytes (picasso.dts:485-489),
-// phandle 0x73. pil_modem (picasso.dts:6451-6477) loads qcom,firmware-name = "modem" into this region. The WLAN
-// SMP2P endpoints live under the modem's smp2p block, which indicates the WLFW service is reached over the modem
-// subsystem; WlanFirmware.c records this rather than pretending the AP independently stages a wlan remoteproc.
-#define WLAN_MODEM_WLAN_BASE 0x8c000000ULL
+// Adjacent modem PIL region, for orientation only: modem_region@8b800000, 0xf800000 bytes. The WLAN SMP2P endpoints
+// live under the modem's smp2p block, which indicates the WLFW service is reached over the modem subsystem;
+// WlanFirmware.c records this rather than pretending the AP independently stages a wlan remoteproc.
+#define WLAN_MODEM_WLAN_BASE 0x8b800000ULL
 #define WLAN_MODEM_WLAN_SIZE 0xf800000ULL
 
-// IRQs. interrupts = <0 0x84 4, 0 0x51 4, 0 0x19f 4, 0 0x1a0 4, 0 0x1a1 4, 0 0x56 4, 0 0x5e 4, 0 0x60 4,
-// 0 0x52 4, 0 0x77 4, 0 0x78 4, 0 0x57 4> (picasso.dts:7305). All are GIC_SPI, level high; these are the raw
-// SPI numbers (INTID = 32 + SPI). The DT gives no interrupt-names for icnss.
+// IRQs. interrupts = <0 0x19e 4, 0 0x19f 4, ... 0 0x1a9 4> on the vangogh icnss node: twelve consecutive GIC_SPI
+// lines, all level high. These are the raw SPI numbers (INTID = 32 + SPI). The DT gives no interrupt-names for icnss.
+// (The picasso tree lists 0x84, 0x51, 0x19f..0x1a1, 0x56, 0x5e, 0x60, 0x52, 0x77, 0x78, 0x57 instead, which is a
+// different set even where the numbers coincide: they are read from this board's own node.)
 #define WLAN_ICNSS_IRQ_COUNT 12
 extern const uint16_t wlan_icnss_irq_spi[WLAN_ICNSS_IRQ_COUNT];
 
-// Regulators. Supply names and config properties come from the icnss node (picasso.dts:7310-7317); the rail
-// definitions come from the RPMH regulator nodes. Voltage values are decimal microvolts.
-//   vdd-cx-mx  -> pm8150_l1  (picasso.dts:5123-5130, phandle 0x9a): 352000..952000; config <0 0> = no override.
-//   vdd-1.8-xo -> pm8150_l14 (picasso.dts:5400-5407, phandle 0x1d): 1616000..1984000; no config property.
-//   vdd-1.3-rfa-> pm8150a_l2 (picasso.dts:5609-5616, phandle 0x1b): 1144000..1328000; no config property.
-//   vdd-3.3-ch1-> pm8150a_l11(picasso.dts:5771-5778, phandle 0x9b): 3000000..3312000; config 3000000..3312000.
-//   vdd-3.3-ch0-> pm8150a_l10(picasso.dts:5753-5760, phandle 0x1c): 3000000..3312000; config 3000000..3312000.
+// Regulators. Supply names come from the icnss node; the rails are resolved through that node's phandles in the
+// vangogh device tree, not from the picasso tree this driver started with:
+//   vdd-cx-mx  -> rpmh-regulator-ldoa4  / pm6350_l4   352000..801000     config <0 0> = no override
+//   vdd-1.8-xo -> rpmh-regulator-ldoa7  / pm6350_l7   1620000..1980000   no config property
+//   vdd-1.3-rfa-> rpmh-regulator-ldoe2  / pm6150a_l2  1170000..1305000   config 1224000..1304000
+//   vdd-3.3-ch1-> rpmh-regulator-ldoe11 / pm6150a_l11 3000000..3401000   config 3000000..3312000
+//   vdd-3.3-ch0-> rpmh-regulator-ldoe10 / pm6150a_l10 3000000..3401000   config 3000000..3312000
 // The config tuple is the voltage range the vendor icnss driver applies with regulator_set_voltage(); a zero pair
 // means "leave the bootloader voltage alone". This driver has no PMIC/SPMI regulator backend, so the probe only
 // validates these ranges and publishes the target it would request.

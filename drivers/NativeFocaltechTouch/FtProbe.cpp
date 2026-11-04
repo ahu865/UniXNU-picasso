@@ -100,9 +100,15 @@ void ioDelayUs(void *, unsigned us) {
     do { __asm__ volatile("isb\n\tmrs %0, cntpct_el0" : "=r"(now)); } while (now - start < ticks);
 }
 
+struct SoftBus {
+    uintptr_t sda, scl;
+};
+
 struct Session {
     Region gccLow, gccQuv, gccCore, gccVote, tlmmEast, tlmmWest, wrapper, se;
     struct geni_i2c i2c;
+    SoftBus bus;
+    bool soft;                             // panel bus is bit-banged on the TLMM, not GENI
     uint64_t levelHz[TB_DFS_LEVELS];
     uint32_t info[18];
     unsigned level, div;
@@ -119,6 +125,128 @@ void pinConfig(Session &s, unsigned gpio, uint32_t cfg) {
     const uintptr_t pin = tlmmPin(s, gpio);
     wr32(pin, 0, (rd32(pin, 0) & ~TB_PIN_CFG_MASK) | cfg);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Bit-banged I2C on the two TLMM pads. The vangogh SE7 reports GENI_IF_DISABLE_RO.FIFO_IF_DISABLE (see the Novatek
+// probe's step 30 / -95), i.e. the engine is strapped for GPI DMA, so the FIFO driver in GeniI2c.c has nothing to
+// talk to. The pads themselves are ordinary TLMM pins: GPIO 6 = SDA, GPIO 7 = SCL (both WEST), and the board's
+// external pull-ups provide the high level. Open drain is emulated with the pad's output-enable bit (TLMM +0x0 bit 9)
+// while the pad level is read back from TLMM +0x4 bit 0 (pinctrl-msm msm_gpio_get). No GCC vote and no GENI state is
+// involved, so this path also works before the QUP clocks are running.
+// ---------------------------------------------------------------------------------------------------------------
+// Quarter period. 5 us => 100 kHz, the rate the vendor adapter uses (the node has no clock-frequency property).
+#define TB_SOFT_QUARTER_US 5u
+#define TB_SOFT_IDLE_CFG tb_pin_cfg(TB_FUNC_GPIO, TB_DRIVE_6MA, TB_PULL_UP, 0)
+
+static void busQuarter(const SoftBus &) { ioDelayUs(nullptr, TB_SOFT_QUARTER_US); }
+static void lineLow(uintptr_t pin) {
+    wr32(pin, TB_TLMM_IO_OFFSET, 0);              // load the value while the pad is still released ...
+    wr32(pin, 0, TB_SOFT_IDLE_CFG | (1u << 9));   // ... then enable the output: no high glitch
+}
+static void lineRelease(uintptr_t pin) {
+    wr32(pin, TB_TLMM_IO_OFFSET, 1);       // pre-load 1 so the release is glitch free
+    wr32(pin, 0, TB_SOFT_IDLE_CFG);               // output disabled: the pull-up takes over
+}
+static int lineRead(uintptr_t pin) { return (int)(rd32(pin, TB_TLMM_IO_OFFSET) & 1u); }
+
+static void busStart(const SoftBus &b) {
+    lineRelease(b.sda);
+    lineRelease(b.scl);
+    busQuarter(b);
+    lineLow(b.sda);                        // start: SDA falls while SCL is high
+    busQuarter(b);
+    lineLow(b.scl);
+    busQuarter(b);
+}
+static void busStop(const SoftBus &b) {
+    lineLow(b.sda);
+    busQuarter(b);
+    lineRelease(b.scl);
+    busQuarter(b);
+    lineRelease(b.sda);                    // stop: SDA rises while SCL is high
+    busQuarter(b);
+}
+static void busRestart(const SoftBus &b) {
+    lineRelease(b.sda);
+    busQuarter(b);
+    lineRelease(b.scl);
+    busQuarter(b);
+    lineLow(b.sda);
+    busQuarter(b);
+    lineLow(b.scl);
+    busQuarter(b);
+}
+// Returns true when the slave acknowledged (SDA pulled low during the ninth clock).
+static bool busWriteByte(const SoftBus &b, uint8_t value) {
+    for (int bit = 7; bit >= 0; --bit) {
+        if ((value >> bit) & 1u) lineRelease(b.sda); else lineLow(b.sda);
+        busQuarter(b);
+        lineRelease(b.scl);
+        busQuarter(b);
+        lineLow(b.scl);
+        busQuarter(b);
+    }
+    lineRelease(b.sda);                    // ninth clock: sample the acknowledge
+    busQuarter(b);
+    lineRelease(b.scl);
+    busQuarter(b);
+    const bool ack = lineRead(b.sda) == 0;
+    lineLow(b.scl);
+    busQuarter(b);
+    return ack;
+}
+static uint8_t busReadByte(const SoftBus &b, bool ack) {
+    uint8_t value = 0;
+    lineRelease(b.sda);                    // the slave drives the data line
+    for (int bit = 7; bit >= 0; --bit) {
+        busQuarter(b);
+        lineRelease(b.scl);
+        busQuarter(b);
+        value = (uint8_t)((value << 1) | (lineRead(b.sda) ? 1u : 0u));
+        lineLow(b.scl);
+        busQuarter(b);
+    }
+    if (ack) lineLow(b.sda); else lineRelease(b.sda);
+    busQuarter(b);
+    lineRelease(b.scl);
+    busQuarter(b);
+    lineLow(b.scl);
+    lineRelease(b.sda);
+    busQuarter(b);
+    return value;
+}
+
+// Address probe only: start, address byte, stop. The reply is the acknowledge bit.
+static int busAddressAck(const SoftBus &b, uint8_t address7) {
+    busStart(b);
+    const bool ack = busWriteByte(b, (uint8_t)(address7 << 1));
+    busStop(b);
+    return ack ? 0 : -6;
+}
+
+// Register read: write the register index, repeated start, read len bytes (last one NACKed).
+static int busReadRegs(const SoftBus &b, uint8_t reg, uint8_t *out, size_t len) {
+    if (!len) return -22;
+    busStart(b);
+    if (!busWriteByte(b, (uint8_t)(TB_I2C_ADDR << 1))) { busStop(b); return -6; }
+    if (!busWriteByte(b, reg)) { busStop(b); return -7; }
+    busRestart(b);
+    if (!busWriteByte(b, (uint8_t)((TB_I2C_ADDR << 1) | 1u))) { busStop(b); return -8; }
+    for (size_t i = 0; i < len; ++i) out[i] = busReadByte(b, i + 1 < len);
+    busStop(b);
+    return 0;
+}
+static int busWriteRegs(const SoftBus &b, const uint8_t *data, size_t len) {
+    if (!len) return -22;
+    busStart(b);
+    if (!busWriteByte(b, (uint8_t)(TB_I2C_ADDR << 1))) { busStop(b); return -6; }
+    for (size_t i = 0; i < len; ++i) {
+        if (!busWriteByte(b, data[i])) { busStop(b); return -9; }
+    }
+    busStop(b);
+    return 0;
+}
+
 
 uint32_t ioRd(void *ctx, uint32_t reg) { return rd32(reinterpret_cast<uintptr_t>(ctx), reg); }
 void ioWr(void *ctx, uint32_t reg, uint32_t value) { wr32(reinterpret_cast<uintptr_t>(ctx), reg, value); }
@@ -270,13 +398,71 @@ bool enableClocks(Session &s) {
 // FocalTech register access. Register write: one byte, bus held (the vendor adapter keeps the bus between the
 // register write and the data read of one transfer). Register read: write reg, then read len bytes.
 static int ftWriteReg(Session &s, uint8_t reg, int hold) {
+    if (s.soft) return busWriteRegs(s.bus, &reg, 1);
     return geni_i2c_write(&s.i2c, &reg, 1, hold);
 }
 static int ftReadRegs(Session &s, uint8_t reg, uint8_t *out, size_t len) {
+    if (s.soft) return busReadRegs(s.bus, reg, out, len);
     int r = ftWriteReg(s, reg, 1);
     if (r) return r;
     return geni_i2c_read(&s.i2c, out, len);
 }
+
+// Any plausible part number beats a hard-coded one: FT3518 answers 0x54, the FT8xxx family answers other values,
+// and 0x00/0xFF only ever mean "no answer" or "bus floating".
+static bool ftPlausibleId(uint8_t id) { return id != 0x00 && id != 0xFF; }
+
+// Power, reset and identify over the bit-banged bus. Runs before GENI is touched: if the panel answers here the
+// engine state is irrelevant, and if it does not the log says exactly where the transfer stopped.
+static bool softProbe(Session &s) {
+    native_focaltech_touch_step = 24;
+    s.soft = true;                         // ftReadRegs/ftWriteReg follow this flag
+    s.bus.sda = tlmmPin(s, TB_GPIO_I2C_SDA);
+    s.bus.scl = tlmmPin(s, TB_GPIO_I2C_SCL);
+    pinConfig(s, TB_GPIO_I2C_SDA, TB_SOFT_IDLE_CFG);
+    pinConfig(s, TB_GPIO_I2C_SCL, TB_SOFT_IDLE_CFG);
+    pinConfig(s, TB_GPIO_RESET, TB_PIN_CFG_RESET);
+    pinConfig(s, TB_GPIO_IRQ, TB_PIN_CFG_IRQ);
+    pinConfig(s, TB_GPIO_VDD, TB_PIN_CFG_VDD);
+    lineRelease(s.bus.sda);
+    lineRelease(s.bus.scl);
+    IODelay(500);
+    printf("PICASSO_FTS soft idle sda=%d scl=%d\n", lineRead(s.bus.sda), lineRead(s.bus.scl));
+
+    wr32(tlmmPin(s, TB_GPIO_VDD), TB_TLMM_IO_OFFSET, 1);   // focaltech,vdd-gpio = <&tlmm 8>: panel 3V rail on
+    IOSleep(10);
+    wr32(tlmmPin(s, TB_GPIO_RESET), TB_TLMM_IO_OFFSET, 0);
+    IODelay(TB_RESET_LOW_MS * 1000u);
+    wr32(tlmmPin(s, TB_GPIO_RESET), TB_TLMM_IO_OFFSET, 1);
+    IOSleep(TB_RESET_SETTLE_MS);
+
+    uint8_t id[2] = {0, 0};
+    int rc = -110;
+    for (unsigned i = 0; i < TB_ID_POLLS; ++i) {
+        rc = ftReadRegs(s, FTS_REG_CHIP_ID_A, id, 2);
+        if (!rc && ftPlausibleId(id[0])) break;
+        IOSleep(TB_ID_POLL_GAP_MS);
+    }
+    native_focaltech_touch_chip_id[0] = id[0];
+    native_focaltech_touch_chip_id[1] = id[1];
+    printf("PICASSO_FTS soft id=%02x %02x rc=%d\n", id[0], id[1], rc);
+    if (!rc && ftPlausibleId(id[0])) return true;
+
+    // Nothing at 0x38: sweep the bus and report the first few responders, so a wrong address or a dead rail is
+    // distinguishable from a protocol problem without another boot.
+    unsigned found = 0;
+    for (uint8_t a = 0x08; a <= 0x77 && found < 6; ++a) {
+        if (a == TB_I2C_ADDR) continue;
+        if (busAddressAck(s.bus, a) == 0) {
+            printf("PICASSO_FTS soft ack addr=%02x\n", a);
+            ++found;
+        }
+    }
+    printf("PICASSO_FTS soft scan found=%u\n", found);
+    s.soft = false;                        // hand the panel bus back to the GENI path
+    return false;
+}
+
 
 static int ftResetAndIdentify(Session &s) {
     // Vendor fts_reset_proc(75): reset low 5 ms, high, wait, then poll the chip id 10 times at 15 ms.
@@ -295,14 +481,20 @@ static int ftResetAndIdentify(Session &s) {
     native_focaltech_touch_chip_id[1] = id[1];
     printf("PICASSO_FTS chip id=%02x %02x rc=%d\n", id[0], id[1], rc);
     if (rc) return rc;
-    return id[0] == 0x54 ? 0 : GENI_ERR_PROTO;
+    return ftPlausibleId(id[0]) ? 0 : GENI_ERR_PROTO;
 }
 
 bool openBus(Session &s, unsigned hz) {
     native_focaltech_touch_step = 3;
     marker(0x41);
     s.i2c.poll_limit = 400000;
-    int r = geni_i2c_init(&s.i2c);
+    int r = geni_i2c_read_info(&s.i2c);
+    if (!r) {
+        printf("PICASSO_FTS geni proto=%u if=%08x fifo=%u/%u w=%u hw=%08x\n", s.i2c.info.protocol,
+               s.i2c.info.if_disable, s.i2c.info.tx_fifo_depth, s.i2c.info.rx_fifo_depth,
+               s.i2c.info.fifo_width_bits, s.i2c.info.hw_param0);
+    }
+    r = geni_i2c_init(&s.i2c);
     if (r) { fail(30, r); return false; }
     marker(0x42);
     r = geni_i2c_set_clock(&s.i2c, hz);
@@ -401,9 +593,19 @@ int parseReport(const uint8_t *buf, int *xs, int *ys, int *ids) {
 
 // Read one frame of contacts. Returns the down-contact count, or < 0 on error (-2 = recovery needed).
 int sampleContacts(Session &s, int *xs, int *ys, int *ids) {
+    static unsigned dumps, errors;
     uint8_t probe[16];
     int r = ftReadRegs(s, 0x00, probe, sizeof probe);
-    if (r) return -1;
+    if (r) {
+        if (errors < 6) { printf("PICASSO_FTS frame err=%d\n", r); ++errors; }
+        return -1;
+    }
+    if (dumps < 3) {
+        printf("PICASSO_FTS frame hdr %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x\n",
+               probe[0], probe[1], probe[2], probe[3], probe[4], probe[5], probe[6], probe[7], probe[8], probe[9],
+               probe[10], probe[11], probe[12], probe[13], probe[14], probe[15]);
+        ++dumps;
+    }
     if (probe[15] == 0xFF) {
         // No point data in the short header: the vendor reads the interrupt ack register and moves on.
         uint8_t ack = 0;
@@ -504,6 +706,16 @@ void probeBody(unsigned stage, const char *where) {
         if (!snapshot(*s, sub)) break;
         setStage(1);
         if (stage < 2) break;
+        // The TLMM path first: it needs neither the QUP clocks nor a FIFO-capable engine, and it is the only path
+        // that can work when GENI_IF_DISABLE_RO reports the FIFO interface as strapped off.
+        if (softProbe(*s)) {
+            native_focaltech_touch_step = 25;
+            printf("PICASSO_FTS stage3 soft hz=%u\n", 1000000u / (4u * TB_SOFT_QUARTER_US));
+            setStage(3);
+            if (stage < 4) break;
+            runStage4(*s);
+            break;
+        }
         if (!enableClocks(*s)) break;
         setStage(2);
         if (stage < 3) break;

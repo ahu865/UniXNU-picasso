@@ -163,7 +163,7 @@ static inline uint32_t tb_pin_cfg(unsigned function, unsigned drive_code, unsign
 #define TB_PIN_CFG_MASK (((7u) << 2) | ((3u) << 4) | ((7u) << 6) | (1u << 9))
 #define TB_PIN_CFG_I2C (tb_pin_cfg(TB_FUNC_QUP11, TB_DRIVE_2MA, TB_PULL_NONE, 0))
 #define TB_PIN_CFG_RESET (tb_pin_cfg(TB_FUNC_GPIO, TB_DRIVE_6MA, TB_PULL_UP, 1))
-#define TB_PIN_CFG_IRQ (tb_pin_cfg(TB_FUNC_GPIO, TB_DRIVE_6MA, TB_PULL_DOWN, 0))
+#define TB_PIN_CFG_IRQ (tb_pin_cfg(TB_FUNC_GPIO, TB_DRIVE_6MA, TB_PULL_UP, 0))
 #define TB_PIN_CFG_VDD (tb_pin_cfg(TB_FUNC_GPIO, TB_DRIVE_6MA, TB_PULL_NONE, 1))
 
 // GCC page/offset split: register constants above are offsets from TB_GCC_BASE; the probe maps 4 KiB pages.

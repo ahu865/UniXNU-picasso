@@ -100,7 +100,7 @@ constexpr uint32_t kHidVolumeDown = 1u << 3;
 constexpr unsigned kPonBlocks = 4;                    // PM6350@0, PM7250B@2, PM6150L@4 and one spare
 constexpr unsigned kGpioBlocks = 48;
 constexpr unsigned kPollMs = 16;
-constexpr unsigned kSettle = 2;                       // equal samples in a row before a level is believed
+constexpr unsigned kSettle = 6;                       // equal samples in a row before a level is believed
 
 struct Input {
     uint32_t channel;
@@ -269,6 +269,7 @@ void learnBaseline() {
 bool gPowerDown;
 bool gVolumeDownDown;
 bool gVolumeUpDown;
+unsigned gVolumeUpChannel;  // kept across the release so the log names the key that let go
 
 // A level that differs from the released byte for two samples is a press, whichever way the PMIC encodes it.
 void sample(Input &in, uint8_t value) {
@@ -336,22 +337,27 @@ void poll() {
         printf("PICASSO_BTN pon bit outside the key map status=%02x released=%02x diff=%02x\n", changedStatus,
                changedBaseline, static_cast<unsigned>(changedStatus ^ changedBaseline));
 
-    // Volume up: the only key on these PMICs that is a plain pulled-up GPIO. It reads low when pressed.
+    // Volume up: the only key on these PMICs that is a plain pulled-up GPIO. It reads low when pressed. Only the
+    // level bit may differ from the released byte: boot 12 showed one block whose status flipped 0x81 -> 0x80
+    // several times a second while nothing was pressed, and any wider difference is a decode artefact, not a key.
     bool up = false;
     unsigned upChannel = 0;
     for (unsigned i = 0; i < g.gpioCount; ++i) {
         Input &in = g.gpio[i];
         if (!readByte(in.channel, kRegGpioStatus, &value)) continue;
         sample(in, value);
-        if (in.steady >= kSettle && (value & 0x01) == 0 && (in.baseline & 0x01) != 0) {
+        const uint8_t diff = static_cast<uint8_t>(value ^ in.baseline);
+        if (in.steady >= kSettle && (diff & 0xfe) == 0 && (value & 0x01) == 0 && (in.baseline & 0x01) != 0) {
             up = true;
             upChannel = in.channel;
+            gVolumeUpChannel = in.channel;
         }
     }
     if (up != gVolumeUpDown) {
         gVolumeUpDown = up;
         ++g.presses[2];
-        printf("PICASSO_BTN volume-up %s channel=%u\n", up ? "PRESSED" : "released", upChannel);
+        printf("PICASSO_BTN volume-up %s channel=%u\n", up ? "PRESSED" : "released",
+               up ? upChannel : gVolumeUpChannel);
     }
     publish();
 }

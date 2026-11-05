@@ -347,3 +347,5 @@ jobs:
           path: |
             device/out/picasso/userdata/userdata-root.img
             device/out/picasso/userdata/userdata-root.json
+
+# reindexed on the CI mirror

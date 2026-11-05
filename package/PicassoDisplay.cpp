@@ -270,12 +270,31 @@ static void publishDisplayModes(IOService *display, uint32_t width, uint32_t hei
     OSSafeReleaseNULL(color); OSSafeReleaseNULL(timings); OSSafeReleaseNULL(colors);
 }
 
+static bool acceleratorStaticsReady;
+
+/* The power source and both accelerators are built from this one file, and until its global
+ * constructor runs they have no metaclass at all: OSTypeAlloc on them dereferences a null
+ * metaclass pointer and the kernel data aborts. Run that constructor exactly once, from whichever
+ * of them is published first. */
+static bool ensureAcceleratorStatics(void) {
+    if (acceleratorStaticsReady) return true;
+    void *handle = OSMetaClass::preModLoad(g_kernel_kmod_info.name);
+    if (!handle) { IOLog("PICASSO_ACCEL preModLoad failed\n"); return false; }
+    picasso_accelerator_static_init();
+    OSReturn status = OSMetaClass::postModLoad(handle);
+    if (status) { IOLog("PICASSO_ACCEL metaclass result=%x\n", status); return false; }
+    acceleratorStaticsReady = true;
+    return true;
+}
+
 /* The fixed power source stands on its own: it is what keeps the lock screen lit, and it must be
  * published even when the accelerator path is skipped or fails. */
 static void publishFixedPowerSource(void) {
     unsigned power = 1;
     PE_parse_boot_argn("picasso-power-source", &power, sizeof(power));
-    if (power == 1) IOLog("PICASSO_POWER fixed power source published=%u\n", picasso_power_source_publish());
+    if (power != 1) return;
+    if (!ensureAcceleratorStatics()) { IOLog("PICASSO_POWER skipped: metaclasses unavailable\n"); return; }
+    IOLog("PICASSO_POWER fixed power source published=%u\n", picasso_power_source_publish());
 }
 
 static bool publishAcceleratorService(bool force) {
@@ -298,11 +317,7 @@ static bool publishAcceleratorService(bool force) {
         IOLog("PICASSO_ACCEL deferred to the GPU probe (sheng-gpu-metal=1)\n");
         return false;
     }
-    void *handle = OSMetaClass::preModLoad(g_kernel_kmod_info.name);
-    if (!handle) { IOLog("PICASSO_ACCEL preModLoad failed\n"); return false; }
-    picasso_accelerator_static_init();
-    OSReturn status = OSMetaClass::postModLoad(handle);
-    if (status) { IOLog("PICASSO_ACCEL metaclass result=%x\n", status); return false; }
+    if (!ensureAcceleratorStatics()) return false;
     IOService *accel = picasso_accelerator_allocate();
     bool initialized = accel && accel->init();
     bool attached = initialized && accel->attach(provider);

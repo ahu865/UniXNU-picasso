@@ -82,6 +82,11 @@ roots = [
   "com.apple.iokit.IOHIDEventDriver",
   # Original IOBSD-matched IOSurfaceRoot, required by graphics/media clients.
   "com.apple.iokit.IOSurface",
+  # IOAcceleratorES base class for both the CPU stub accelerator and the staged Adreno one.
+  # Without it in the collection OSKextLoadKextWithIdentifier answers dc00800a
+  # (kOSKextReturnDisabled, "requests to user space are disabled"), no IOAcceleratorES
+  # service ever appears, and backboardd cannot compose a frame.
+  "com.apple.iokit.IOGPUFamily",
   "com.apple.iokit.IOMobileGraphicsFamily",
   "com.apple.iokit.IOStorageFamily",
   "com.apple.kec.Libm",
@@ -279,7 +284,12 @@ kernel_args = [
   # without this seed, which is why AGXAccelerator never matched and every frame was composited on the CPU.
   "sheng-gpu=4",
   # Publish the staged AGXAccelerator for the original Metal discovery (implies sheng-gpu-publish=1).
-  "sheng-gpu-metal=1",
+  # Held at 0 while the board is qualified: its MetalPluginName points at the NativeAdrenoMetal
+  # bundle, which is not part of the restored system image, so registering it would leave every
+  # Metal client without a device. With the flag at 0 the display probe publishes the empty
+  # IOAcceleratorES instead and CoreAnimation stays on its software path; the probe below still
+  # runs the full A620 bring-up.
+  "sheng-gpu-metal=0",
   # WLAN probe stages 1-4: read the icnss/WCSS identity window, the apps-SMMU geometry for stream 0xc0,
   # the MBN plan and the transport conclusion. Read-only; nothing here writes the CNSS block.
   "sheng-wlan=4",

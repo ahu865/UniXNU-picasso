@@ -108,6 +108,9 @@ extern "C" IOService *native_adreno_accelerator_allocate(void) __attribute__((we
 extern "C" unsigned native_adreno_accelerator_instance_size(void) __attribute__((weak));
 extern "C" kern_return_t OSKextLoadKextWithIdentifier(const char *);
 extern "C" kmod_info_t g_kernel_kmod_info;
+/* The empty IOAcceleratorES fallback (package/PicassoDisplay.cpp): published when the
+ * staged accelerator cannot be registered, so backboardd still has a service to match. */
+extern "C" bool picasso_publish_cpu_accelerator(void);
 
 /* The boot addon's progress (bsd/kern/kern_exec.c): extensions mount, daemons
  * mount, wallpaper overlay, each stage/status. Read by the report thread below
@@ -2224,7 +2227,11 @@ extern "C" int native_adreno620_cp_start(void)
             return -1;
         }
         if (!publishMetal()) {
-            printf("PICASSO_GPU cp: metal failed\n");
+            /* No IOAcceleratorES service means no frame is ever composed: hand the
+             * registry the empty accelerator so the UI runs on the software path while
+             * the GPU bring-up continues to be diagnosed. */
+            const bool stub = picasso_publish_cpu_accelerator();
+            printf("PICASSO_GPU cp: metal failed, cpu accelerator published=%u\n", stub);
             return -1;
         }
         printf("PICASSO_GPU cp: metal published\n");

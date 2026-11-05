@@ -270,12 +270,20 @@ static void publishDisplayModes(IOService *display, uint32_t width, uint32_t hei
     OSSafeReleaseNULL(color); OSSafeReleaseNULL(timings); OSSafeReleaseNULL(colors);
 }
 
-static void publishAcceleratorStub(void) {
+/* The fixed power source stands on its own: it is what keeps the lock screen lit, and it must be
+ * published even when the accelerator path is skipped or fails. */
+static void publishFixedPowerSource(void) {
+    unsigned power = 1;
+    PE_parse_boot_argn("picasso-power-source", &power, sizeof(power));
+    if (power == 1) IOLog("PICASSO_POWER fixed power source published=%u\n", picasso_power_source_publish());
+}
+
+static bool publishAcceleratorService(bool force) {
     unsigned requested = 1;
     PE_parse_boot_argn("picasso-accel-stub", &requested, sizeof(requested));
     unsigned metal = 0;
     PE_parse_boot_argn("sheng-gpu-metal", &metal, sizeof(metal));
-    if (metal == 1) requested = 0;
+    if (metal == 1 && !force) requested = 0;
     // Both the PR13 accelerator and the CPU fallback derive from this original
     // class. Register neither a replacement class nor a duplicate metaclass.
     kern_return_t loaded = OSKextLoadKextWithIdentifier("com.apple.iokit.IOGPUFamily");
@@ -284,14 +292,18 @@ static void publishAcceleratorStub(void) {
     OSSafeReleaseNULL(name);
     IOService *provider = IOService::getResourceService();
     if (loaded || !present || !provider) {
-        IOLog("PICASSO_ACCEL publish refused load=%x class_present=%u provider=%u\n", loaded, present, provider != nullptr); return;
+        IOLog("PICASSO_ACCEL publish refused load=%x class_present=%u provider=%u\n", loaded, present, provider != nullptr); return false;
+    }
+    if (requested != 1) {
+        IOLog("PICASSO_ACCEL deferred to the GPU probe (sheng-gpu-metal=1)\n");
+        return false;
     }
     void *handle = OSMetaClass::preModLoad(g_kernel_kmod_info.name);
-    if (!handle) { IOLog("PICASSO_ACCEL preModLoad failed\n"); return; }
+    if (!handle) { IOLog("PICASSO_ACCEL preModLoad failed\n"); return false; }
     picasso_accelerator_static_init();
     OSReturn status = OSMetaClass::postModLoad(handle);
-    if (status) { IOLog("PICASSO_ACCEL metaclass result=%x\n", status); return; }
-    IOService *accel = requested == 1 ? picasso_accelerator_allocate() : nullptr;
+    if (status) { IOLog("PICASSO_ACCEL metaclass result=%x\n", status); return false; }
+    IOService *accel = picasso_accelerator_allocate();
     bool initialized = accel && accel->init();
     bool attached = initialized && accel->attach(provider);
     bool started = attached && accel->start(provider);
@@ -299,11 +311,20 @@ static void publishAcceleratorStub(void) {
     // The registry keeps the published service alive; drop the allocation reference either way.
     OSSafeReleaseNULL(accel);
     IOLog("PICASSO_ACCEL published=%u\n", started);
-    // Its metaclass was registered with the accelerator's above (same file). boot-arg
-    // picasso-power-source=0 leaves the fixed "full, on a charger" power source out.
-    unsigned power = 1;
-    PE_parse_boot_argn("picasso-power-source", &power, sizeof(power));
-    if (power == 1) IOLog("PICASSO_POWER fixed power source published=%u\n", picasso_power_source_publish());
+    return started;
+}
+
+/* The GPU probe calls this when Metal registration fails: with no IOAcceleratorES service at all
+ * backboardd never composes a frame, while the empty accelerator keeps CoreAnimation on its
+ * software path (the same fallback that brought mondrian to the iOS main UI). */
+extern "C" bool picasso_publish_cpu_accelerator(void) {
+    publishFixedPowerSource();
+    return publishAcceleratorService(true);
+}
+
+static void publishAcceleratorStub(void) {
+    publishFixedPowerSource();
+    publishAcceleratorService(false);
 }
 
 extern "C" void native_legacy_display_late_probe(void) {

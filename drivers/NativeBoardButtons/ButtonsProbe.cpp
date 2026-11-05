@@ -174,8 +174,13 @@ void inventory() {
     const uint32_t version = rd(gCore.va, kArbVersion);
     const uint32_t features = rd(gCore.va, kArbFeatures);
     uint32_t channels = features & 0x7ff;
-    printf("PICASSO_BTN arbiter version=%08x features=%08x channels=%u\n", version, features, channels);
-    if ((version >> 24) != 5) {
+    // Vangogh answers 50010000 here: the major is packed BCD, so the byte [31:24] is 0x50 for 5.0, not 0x05.
+    // Older revisions put the plain number in the same byte, and both forms appear in Qualcomm's own dumps.
+    const uint32_t majorByte = (version >> 24) & 0xff;
+    const uint32_t major = (majorByte & 0xf0) == 0x50 ? (majorByte >> 4) : majorByte;
+    printf("PICASSO_BTN arbiter version=%08x major=%u features=%08x channels=%u\n",
+           version, major, features, channels);
+    if (major != 5) {
         // Version 7 moved the observer window and the command encoding. Guessing there could turn a read into a
         // write of a PMIC register, so this driver stops instead.
         printf("PICASSO_BTN arbiter is not version 5: nothing read\n");
